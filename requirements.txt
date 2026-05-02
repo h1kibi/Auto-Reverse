@@ -1,0 +1,14 @@
+# Reverse-Agent 依赖
+
+# 核心依赖（Python 标准库已包含大部分功能）
+
+# 可选：YARA Python 绑定
+# yara-python>=4.0.0
+
+# 可选：Ghidra Python 支持（需要 Ghidra 安装）
+# ghidra-bridge>=0.4.0
+
+# 开发依赖
+pytest>=7.0.0
+black>=22.0.0
+flake8>=4.0.0

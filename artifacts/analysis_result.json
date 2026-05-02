@@ -1,0 +1,78 @@
+{
+  "sample": {
+    "path": "C:\\Projects\\Agent-projects\\Reverse-Agent\\samples\\notepad.exe",
+    "sha256": "ca29e8d8eca84f6f1b39e0bad771752cebf86d7754c20b69c77ab641a9ac2767",
+    "md5": "ff3e29fdfafa0e9030e2fcd71489d41d",
+    "sha1": "d11d30ad4f2780ffee3626901bc50ccf5b20fc2d",
+    "file_type": "",
+    "architecture": "",
+    "size": 360448
+  },
+  "tool_results": [
+    {
+      "tool": "file",
+      "version": "0.1.0",
+      "sample_sha256": "ca29e8d8eca84f6f1b39e0bad771752cebf86d7754c20b69c77ab641a9ac2767",
+      "status": "failed",
+      "artifacts": [],
+      "summary": "file command failed: Command not found: file",
+      "errors": [
+        "Command not found: file"
+      ],
+      "runtime_ms": 4
+    },
+    {
+      "tool": "strings",
+      "version": "0.1.0",
+      "sample_sha256": "ca29e8d8eca84f6f1b39e0bad771752cebf86d7754c20b69c77ab641a9ac2767",
+      "status": "failed",
+      "artifacts": [],
+      "summary": "strings command failed: Command not found: strings",
+      "errors": [
+        "Command not found: strings"
+      ],
+      "runtime_ms": 1
+    },
+    {
+      "tool": "readelf",
+      "version": "0.1.0",
+      "sample_sha256": "ca29e8d8eca84f6f1b39e0bad771752cebf86d7754c20b69c77ab641a9ac2767",
+      "status": "partial",
+      "artifacts": [],
+      "summary": "readelf analysis completed with 0 artifacts",
+      "errors": [
+        "readelf -h failed: Command not found: readelf",
+        "readelf -S failed: Command not found: readelf",
+        "readelf -s failed: Command not found: readelf",
+        "readelf -d failed: Command not found: readelf"
+      ],
+      "runtime_ms": 5
+    },
+    {
+      "tool": "objdump",
+      "version": "0.1.0",
+      "sample_sha256": "ca29e8d8eca84f6f1b39e0bad771752cebf86d7754c20b69c77ab641a9ac2767",
+      "status": "partial",
+      "artifacts": [],
+      "summary": "objdump analysis completed with 0 artifacts",
+      "errors": [
+        "objdump -h failed: Command not found: objdump",
+        "objdump -t failed: Command not found: objdump",
+        "objdump -d failed: Command not found: objdump",
+        "objdump -r failed: Command not found: objdump"
+      ],
+      "runtime_ms": 9
+    },
+    {
+      "tool": "yara",
+      "version": "0.1.0",
+      "sample_sha256": "ca29e8d8eca84f6f1b39e0bad771752cebf86d7754c20b69c77ab641a9ac2767",
+      "status": "skipped",
+      "artifacts": [],
+      "summary": "YARA not installed or not in PATH",
+      "errors": [],
+      "runtime_ms": 1
+    }
+  ],
+  "timestamp": "2026-05-03T01:02:53.100956"
+}
