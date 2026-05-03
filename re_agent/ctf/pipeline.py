@@ -84,11 +84,22 @@ def solve_challenge(
     if validate and candidates:
         validator = FlagValidator(timeout=min(timeout, 15))
         for c in candidates:
-            vr = validator.validate(Path(sample_path), c.value)
+            vr = validator.validate(
+                Path(sample_path),
+                c.value,
+                output_dir=out,
+            )
             c.evidence.extend(vr.evidence)
             if vr.accepted:
                 c.verified = True
                 c.confidence = max(c.confidence, 0.97)
+                trace.append({
+                    "solver": c.source,
+                    "event": "verified",
+                    "value": c.value,
+                    "mode": vr.mode,
+                })
+                break  # 验证成功即停止
 
     solved = any(c.verified for c in candidates)
 
