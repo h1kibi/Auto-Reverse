@@ -3,6 +3,7 @@ Ghidra headless 工具适配器 - 反编译和函数分析
 """
 
 import json
+import os
 from pathlib import Path
 from .base import BaseTool
 from ..schema import ToolResult, ToolStatus, ArtifactType
@@ -23,12 +24,10 @@ class GhidraTool(BaseTool):
         super().__init__(output_dir)
         self.ghidra_home = ghidra_home or self._find_ghidra()
         self.max_functions = max_functions
+        self.ghidra_out = Path(output_dir) / "ghidra"
 
     def _find_ghidra(self) -> str:
         """尝试自动查找 Ghidra 安装路径"""
-        import os
-
-        # 常见路径
         candidates = [
             "/opt/ghidra",
             "/usr/local/ghidra",
@@ -40,7 +39,6 @@ class GhidraTool(BaseTool):
             if Path(path).exists():
                 return path
 
-        # 检查环境变量
         if "GHIDRA_HOME" in os.environ:
             return os.environ["GHIDRA_HOME"]
 
@@ -67,23 +65,26 @@ class GhidraTool(BaseTool):
                     summary=f"Ghidra analyzeHeadless not found at {ghidra_bin}",
                 )
 
-            # 创建临时项目目录
-            project_dir = self.output_dir / "ghidra_project"
+            # 创建输出目录
+            self.ghidra_out.mkdir(parents=True, exist_ok=True)
+            project_dir = self.ghidra_out / "project"
             project_dir.mkdir(exist_ok=True)
+            decompiled_dir = self.ghidra_out / "decompiled"
+            decompiled_dir.mkdir(exist_ok=True)
 
             # 创建 Ghidra 脚本
             script_content = self._generate_analysis_script()
-            script_path = self.output_dir / "analyze.py"
+            script_path = self.ghidra_out / "analyze.py"
             script_path.write_text(script_content, encoding="utf-8")
 
             # 执行 Ghidra headless 分析
             cmd = [
                 str(ghidra_bin),
                 str(project_dir),
-                "temp_project",
+                f"project_{sample_sha256[:12]}",
                 "-import", sample_path,
-                "-postScript", str(script_path),
-                "-scriptPath", str(self.output_dir),
+                "-postScript", script_path.name,
+                "-scriptPath", str(self.ghidra_out),
                 "-deleteProject",
             ]
 
@@ -95,11 +96,11 @@ class GhidraTool(BaseTool):
                     version=self.version,
                     sample_sha256=sample_sha256,
                     status=ToolStatus.FAILED,
-                    summary=f"Ghidra analysis failed",
+                    summary="Ghidra analysis failed",
                     errors=[stderr[:500] if stderr else "Unknown error"],
                 )
 
-            # 读取脚本输出
+            # 收集 artifacts
             artifacts = self._collect_artifacts(sample_sha256)
 
             summary = f"Ghidra analysis completed: {len(artifacts)} artifacts generated"
@@ -117,17 +118,18 @@ class GhidraTool(BaseTool):
         return result
 
     def _generate_analysis_script(self) -> str:
-        """生成 Ghidra Java/Python 分析脚本"""
+        """生成 Ghidra Python 分析脚本"""
         return f'''
-# Ghidra headless analysis script
-# Outputs function list, call graph, and decompiled code
-
 import json
+import os
 from ghidra.app.decompiler import DecompInterface
 from ghidra.util.task import ConsoleTaskMonitor
 
-output_dir = "{self.output_dir.as_posix()}"
-max_functions = {self.max_functions}
+OUTPUT_DIR = r"{self.ghidra_out.as_posix()}"
+MAX_FUNCTIONS = {self.max_functions}
+
+def safe_name(name):
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
 
 def run():
     monitor = ConsoleTaskMonitor()
@@ -137,57 +139,57 @@ def run():
     func_manager = currentProgram.getFunctionManager()
     functions = list(func_manager.getFunctions(True))
 
-    # 限制函数数量
-    if len(functions) > max_functions:
-        functions = functions[:max_functions]
+    if len(functions) > MAX_FUNCTIONS:
+        functions = functions[:MAX_FUNCTIONS]
 
-    # 1. 导出函数列表
-    func_list = []
+    decompiled_dir = os.path.join(OUTPUT_DIR, "decompiled")
+    if not os.path.exists(decompiled_dir):
+        os.makedirs(decompiled_dir)
+
+    function_rows = []
+    call_edges = []
+
     for func in functions:
-        entry = func.getEntryPoint()
-        func_list.append({{
-            "name": func.getName(),
-            "address": str(entry),
-            "is_thunk": func.isThunk(),
-            "is_library": func.isLibrary(),
-            "param_count": func.getParameterCount(),
-        }})
+        name = func.getName()
+        entry = str(func.getEntryPoint())
 
-    func_json = json.dumps(func_list, indent=2)
-    with open(output_dir + "/functions.json", "w") as f:
-        f.write(func_json)
-
-    # 2. 导出调用图
-    call_graph = {{}}
-    for func in functions[:200]:  # 限制调用图大小
-        callers = [str(c.getEntryPoint()) for c in func.getCallingFunctions(monitor)]
-        callees = [str(c.getEntryPoint()) for c in func.getCalledFunctions(monitor)]
-        call_graph[str(func.getEntryPoint())] = {{
-            "name": func.getName(),
-            "callers": callers,
-            "callees": callees,
+        row = {{
+            "name": name,
+            "address": entry,
+            "is_library": func.isExternal(),
+            "body_size": func.getBody().getNumAddresses(),
         }}
+        function_rows.append(row)
 
-    graph_json = json.dumps(call_graph, indent=2)
-    with open(output_dir + "/callgraph.json", "w") as f:
-        f.write(graph_json)
+        called = func.getCalledFunctions(monitor)
+        for callee in called:
+            call_edges.append({{
+                "caller": name,
+                "caller_address": entry,
+                "callee": callee.getName(),
+                "callee_address": str(callee.getEntryPoint()),
+            }})
 
-    # 3. 反编译关键函数（前50个）
-    decompiled = {{}}
-    for func in functions[:50]:
-        result = decomp.decompileFunction(func, 60, monitor)
-        if result and result.depiledFunction():
-            decompiled[func.getName()] = {{
-                "address": str(func.getEntryPoint()),
-                "code": result.getDecompiledFunction().getC(),
-            }}
+        try:
+            res = decomp.decompileFunction(func, 60, monitor)
+            if res and res.getDecompiledFunction():
+                c_code = res.getDecompiledFunction().getC()
+                out_name = safe_name(name) + "_" + entry.replace(":", "_") + ".c"
+                with open(os.path.join(decompiled_dir, out_name), "w") as f:
+                    f.write(c_code)
+                row["decompiled_path"] = os.path.join("decompiled", out_name)
+        except Exception as e:
+            row["decompile_error"] = str(e)
 
-    dec_json = json.dumps(decompiled, indent=2, ensure_ascii=False)
-    with open(output_dir + "/decompiled.json", "w") as f:
-        f.write(dec_json)
+    with open(os.path.join(OUTPUT_DIR, "functions.json"), "w") as f:
+        json.dump(function_rows, f, indent=2)
 
-    print("Analysis complete: {{}} functions, {{}} call graph entries, {{}} decompiled".format(
-        len(func_list), len(call_graph), len(decompiled)
+    with open(os.path.join(OUTPUT_DIR, "callgraph.json"), "w") as f:
+        json.dump(call_edges, f, indent=2)
+
+    print("Analysis complete: {{}} functions, {{}} call edges, {{}} decompiled".format(
+        len(function_rows), len(call_edges),
+        len([r for r in function_rows if "decompiled_path" in r])
     ))
 
 run()
@@ -198,7 +200,7 @@ run()
         artifacts = []
 
         # 函数列表
-        func_file = self.output_dir / "functions.json"
+        func_file = self.ghidra_out / "functions.json"
         if func_file.exists():
             content = func_file.read_text(encoding="utf-8")
             func_list = json.loads(content)
@@ -211,7 +213,7 @@ run()
             artifacts.append(artifact)
 
         # 调用图
-        graph_file = self.output_dir / "callgraph.json"
+        graph_file = self.ghidra_out / "callgraph.json"
         if graph_file.exists():
             content = graph_file.read_text(encoding="utf-8")
             artifact = self._create_artifact(
@@ -222,18 +224,20 @@ run()
             artifacts.append(artifact)
 
         # 反编译代码
-        dec_file = self.output_dir / "decompiled.json"
-        if dec_file.exists():
-            content = dec_file.read_text(encoding="utf-8")
-            decompiled = json.loads(content)
+        decompiled_dir = self.ghidra_out / "decompiled"
+        if decompiled_dir.exists():
+            for c_file in decompiled_dir.glob("*.c"):
+                content = c_file.read_text(encoding="utf-8")
+                # 从文件名提取函数名和地址
+                parts = c_file.stem.rsplit("_", 1)
+                func_name = parts[0] if len(parts) > 1 else c_file.stem
+                address = parts[1] if len(parts) > 1 else ""
 
-            # 为每个函数创建单独的 artifact
-            for func_name, info in decompiled.items():
                 artifact = self._create_artifact(
                     artifact_type=ArtifactType.DECOMPILED_FUNCTION,
-                    content=info["code"],
+                    content=content,
                     name=func_name,
-                    address=info["address"],
+                    address=address,
                 )
                 artifacts.append(artifact)
 
