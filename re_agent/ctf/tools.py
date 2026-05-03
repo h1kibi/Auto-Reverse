@@ -42,8 +42,40 @@ class ArtifactStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
+    def safe_path(self, relative: str) -> Path:
+        """Return a path inside artifact root, rejecting traversal/absolute paths."""
+        if not isinstance(relative, str) or not relative.strip():
+            raise ValueError("artifact path must be a non-empty string")
+
+        rel = Path(relative)
+
+        if rel.is_absolute():
+            raise ValueError("artifact path must be relative")
+
+        if any(part in {"..", ""} for part in rel.parts):
+            raise ValueError("artifact path must not contain '..' or empty path parts")
+
+        resolved_root = self.root.resolve()
+        resolved_path = (resolved_root / rel).resolve()
+
+        try:
+            resolved_path.relative_to(resolved_root)
+        except ValueError as e:
+            raise ValueError("artifact path escapes artifact root") from e
+
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        return resolved_path
+
     def write_json(self, relative: str, payload: JsonDict) -> str:
         p = self.path(relative)
+        p.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return str(p.relative_to(self.root))
+
+    def write_json_safe(self, relative: str, payload: JsonDict) -> str:
+        p = self.safe_path(relative)
         p.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -60,6 +92,50 @@ class ArtifactStore:
         p = self.path(relative)
         p.write_text(text, encoding="utf-8")
         return str(p.relative_to(self.root))
+
+    def write_text_safe(self, relative: str, text: str) -> str:
+        p = self.safe_path(relative)
+        p.write_text(text, encoding="utf-8")
+        return str(p.relative_to(self.root))
+
+    def read_text_range_safe(
+        self,
+        relative: str,
+        start_line: int = 1,
+        max_lines: int = 120,
+        max_chars: int = 12000,
+    ) -> JsonDict:
+        p = self.safe_path(relative)
+
+        if not p.exists():
+            raise FileNotFoundError(f"artifact not found: {relative}")
+
+        if not p.is_file():
+            raise ValueError(f"artifact is not a file: {relative}")
+
+        text = p.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+
+        start = max(1, int(start_line))
+        max_lines = max(1, min(int(max_lines), 500))
+
+        end = min(len(lines), start + max_lines - 1)
+        chunk = "\n".join(lines[start - 1:end])
+
+        if len(chunk) > max_chars:
+            chunk = chunk[:max_chars]
+            truncated_by_chars = True
+        else:
+            truncated_by_chars = False
+
+        return {
+            "path": str(Path(relative)),
+            "start_line": start,
+            "end_line": end,
+            "total_lines": len(lines),
+            "truncated_by_chars": truncated_by_chars,
+            "text": chunk,
+        }
 
 
 class ToolRegistry:
@@ -146,6 +222,8 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     registry.register(_rank_functions_tool(store))
     registry.register(_run_angr_stdout_tool(store))
     registry.register(_run_z3_tool(store))
+    registry.register(_write_artifact_tool(store))
+    registry.register(_read_artifact_range_tool(store))
     return registry
 
 
@@ -1363,3 +1441,192 @@ def _validate_z3_spec_shape(spec: JsonDict) -> str | None:
         return "prefix + suffix longer than length"
 
     return None
+
+
+# ========== write_artifact / read_artifact_range 工具 ==========
+
+def _write_artifact_tool(store: ArtifactStore) -> ToolSpec:
+    def handler(args: JsonDict) -> JsonDict:
+        path = str(args["path"])
+        content_type = str(args.get("content_type", "text"))
+        overwrite = bool(args.get("overwrite", False))
+
+        try:
+            target = store.safe_path(path)
+        except ValueError as e:
+            return {
+                "summary": f"invalid artifact path: {e}",
+                "data": {"written": False, "reason": "invalid_path", "error": str(e)},
+                "artifacts": [],
+            }
+
+        if target.exists() and not overwrite:
+            return {
+                "summary": f"artifact already exists: {path}",
+                "data": {
+                    "written": False,
+                    "reason": "already_exists",
+                    "path": path,
+                    "hint": "set overwrite=true to replace it",
+                },
+                "artifacts": [path],
+            }
+
+        if content_type == "json":
+            payload = args.get("json")
+            if not isinstance(payload, dict):
+                return {
+                    "summary": "json content must be an object",
+                    "data": {"written": False, "reason": "invalid_json_content"},
+                    "artifacts": [],
+                }
+            rel = store.write_json_safe(path, payload)
+
+        elif content_type == "text":
+            text = args.get("text")
+            if not isinstance(text, str):
+                return {
+                    "summary": "text content must be a string",
+                    "data": {"written": False, "reason": "invalid_text_content"},
+                    "artifacts": [],
+                }
+            rel = store.write_text_safe(path, text)
+
+        else:
+            return {
+                "summary": f"unsupported content_type: {content_type}",
+                "data": {
+                    "written": False,
+                    "reason": "unsupported_content_type",
+                    "supported": ["json", "text"],
+                },
+                "artifacts": [],
+            }
+
+        return {
+            "summary": f"wrote artifact: {rel}",
+            "data": {
+                "written": True,
+                "path": rel,
+                "content_type": content_type,
+                "bytes": target.stat().st_size,
+                "next_step": (
+                    "run_z3 with constraints_path"
+                    if rel.endswith(".json") and "constraint" in rel.lower()
+                    else "read_artifact_range"
+                ),
+            },
+            "artifacts": [rel],
+        }
+
+    return ToolSpec(
+        name="write_artifact",
+        description=(
+            "Write a JSON or text artifact inside the current artifact store. "
+            "Use this to save generated constraints, notes, or intermediate analysis. "
+            "Paths must be relative and cannot escape the artifact directory."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative artifact path, e.g. constraints.generated.json",
+                },
+                "content_type": {
+                    "type": "string",
+                    "enum": ["json", "text"],
+                    "default": "text",
+                },
+                "json": {
+                    "type": "object",
+                    "description": "JSON object to write when content_type=json",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text content to write when content_type=text",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "default": False,
+                },
+            },
+            "required": ["path", "content_type"],
+            "additionalProperties": False,
+        },
+        handler=handler,
+    )
+
+
+def _read_artifact_range_tool(store: ArtifactStore) -> ToolSpec:
+    def handler(args: JsonDict) -> JsonDict:
+        path = str(args["path"])
+        start_line = int(args.get("start_line", 1))
+        max_lines = int(args.get("max_lines", 120))
+        max_chars = int(args.get("max_chars", 12000))
+
+        try:
+            payload = store.read_text_range_safe(
+                path,
+                start_line=start_line,
+                max_lines=max_lines,
+                max_chars=max_chars,
+            )
+        except Exception as e:
+            return {
+                "summary": f"failed to read artifact range: {e}",
+                "data": {
+                    "found": False,
+                    "reason": "read_error",
+                    "error": str(e),
+                    "path": path,
+                },
+                "artifacts": [],
+            }
+
+        return {
+            "summary": (
+                f"read {payload['path']} lines "
+                f"{payload['start_line']}-{payload['end_line']} "
+                f"of {payload['total_lines']}"
+            ),
+            "data": {"found": True, **payload},
+            "artifacts": [payload["path"]],
+        }
+
+    return ToolSpec(
+        name="read_artifact_range",
+        description=(
+            "Read a bounded line range from a text artifact. "
+            "Use this instead of loading full large files into the model context."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative artifact path to read.",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "default": 120,
+                    "minimum": 1,
+                    "maximum": 500,
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "default": 12000,
+                    "minimum": 100,
+                    "maximum": 50000,
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        handler=handler,
+    )

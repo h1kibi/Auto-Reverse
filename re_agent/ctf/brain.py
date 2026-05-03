@@ -46,6 +46,10 @@ SYSTEM_PROMPT = """你是 Auto-Reverse 的 CTF Reverse Agent。
 - run_z3 返回的 candidate 仍然不是最终答案，必须调用 validate_candidate；
 - 不要凭空发明 constraints，只使用 excerpt 中明确支持的约束；
 - 如果约束不完整，先说明缺少信息，不要伪造 flag；
+- 如果你从 decompile_function 中整理出 constraints JSON，优先调用 write_artifact 保存为 constraints.generated.json，然后调用 run_z3({"constraints_path":"constraints.generated.json"})；
+- 如果 artifact 太长，不要要求完整读取，调用 read_artifact_range 读取必要行段；
+- write_artifact / read_artifact_range 只能访问 artifact store 内部路径；
+- 不要写入无关大文本，只保存 constraints、notes、solve 草稿等中间产物；
 - decode_strings、rank_functions、run_angr_stdout、run_z3 的输出仍然只是证据，不是最终结论。
 
 输出最终报告时包含：
