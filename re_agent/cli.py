@@ -305,9 +305,76 @@ def cmd_solve(args):
     return 0 if result.status == "solved" else 2
 
 
+def _load_json_object(raw: str, source: str) -> dict:
+    """解析 JSON object"""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in {source}: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValueError(f"{source} must be a JSON object")
+
+    return data
+
+
+def _load_agent_tool_extra_args(args) -> dict:
+    """加载 --args-file 和 --args，并按优先级 merge"""
+    payload = {}
+
+    if getattr(args, "args_file", None):
+        path = Path(args.args_file).resolve()
+        if not path.exists():
+            raise ValueError(f"--args-file not found: {path}")
+        payload.update(
+            _load_json_object(path.read_text(encoding="utf-8"), f"--args-file {path}")
+        )
+
+    if getattr(args, "args_json", None):
+        payload.update(_load_json_object(args.args_json, "--args"))
+
+    return payload
+
+
+SAMPLE_PATH_TOOLS = {"profile_sample", "validate_candidate", "decode_strings"}
+
+
+def _build_legacy_agent_tool_payload(args, sample: Path, registry) -> dict:
+    """兼容 PR-4/PR-6 的旧参数写法"""
+    if args.tool == "profile_sample":
+        return {"sample_path": str(sample), "skip_ghidra": args.skip_ghidra}
+
+    if args.tool == "validate_candidate":
+        if not args.candidate:
+            raise ValueError(
+                "validate_candidate requires --candidate or --args '{\"candidate\":\"...\"}'"
+            )
+        return {"sample_path": str(sample), "candidate": args.candidate, "timeout": args.timeout}
+
+    if args.tool == "decompile_function":
+        return {"function": args.function, "max_lines": args.max_lines}
+
+    if args.tool == "decode_strings":
+        return {"sample_path": str(sample), "flag_regex": args.flag_regex, "timeout": args.timeout}
+
+    if args.tool == "rank_functions":
+        return {"max_functions": args.max_functions}
+
+    if args.tool in registry.names():
+        return {}
+
+    raise ValueError(f"unknown tool: {args.tool}. Available: {', '.join(registry.names())}")
+
+
+def _finalize_agent_tool_payload(tool_name: str, payload: dict, sample: Path) -> dict:
+    """补齐通用字段"""
+    if tool_name in SAMPLE_PATH_TOOLS:
+        payload.setdefault("sample_path", str(sample))
+    return payload
+
+
 def cmd_agent_tools(args):
     """运行本地 CTF Agent 工具"""
-    import json
     from .ctf.tools import ArtifactStore, ToolExecutor, build_default_ctf_registry
 
     sample = Path(args.sample).resolve()
@@ -320,39 +387,21 @@ def cmd_agent_tools(args):
     registry = build_default_ctf_registry(store)
     executor = ToolExecutor(registry, store)
 
-    if args.tool == "profile_sample":
-        payload = {
-            "sample_path": str(sample),
-            "skip_ghidra": args.skip_ghidra,
-        }
-    elif args.tool == "validate_candidate":
-        if not args.candidate:
-            print("Error: --candidate is required for validate_candidate")
-            return 1
-        payload = {
-            "sample_path": str(sample),
-            "candidate": args.candidate,
-            "timeout": args.timeout,
-        }
-    elif args.tool == "decompile_function":
-        payload = {
-            "function": args.function,
-            "max_lines": args.max_lines,
-        }
-    elif args.tool == "decode_strings":
-        payload = {
-            "sample_path": str(sample),
-            "flag_regex": args.flag_regex,
-            "timeout": args.timeout,
-        }
-    elif args.tool == "rank_functions":
-        payload = {
-            "max_functions": args.max_functions,
-        }
-    else:
-        print(f"Error: unknown tool: {args.tool}")
-        print(f"Available tools: {', '.join(registry.names())}")
+    try:
+        base_payload = _build_legacy_agent_tool_payload(args, sample, registry)
+        extra_payload = _load_agent_tool_extra_args(args)
+
+        payload = {**base_payload, **extra_payload}
+        payload = _finalize_agent_tool_payload(args.tool, payload, sample)
+
+    except Exception as e:
+        print(f"Error: {e}")
         return 1
+
+    if getattr(args, "show_payload", False):
+        print("Final tool payload:")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print()
 
     result = executor.execute(args.tool, payload)
 
@@ -663,6 +712,20 @@ def main():
         type=int,
         default=10,
         help="rank_functions 最大函数数量",
+    )
+    agent_tools_parser.add_argument(
+        "--args",
+        dest="args_json",
+        help="JSON object passed to the selected tool. Overrides legacy CLI flags.",
+    )
+    agent_tools_parser.add_argument(
+        "--args-file",
+        help="Path to a JSON file containing tool arguments. Overridden by --args.",
+    )
+    agent_tools_parser.add_argument(
+        "--show-payload",
+        action="store_true",
+        help="Print final tool payload before execution.",
     )
 
     # ========== agent 命令 ==========
