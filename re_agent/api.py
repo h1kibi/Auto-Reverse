@@ -3,18 +3,21 @@ Web API - FastAPI 接口
 
 API:
 - POST /analyze - 分析样本
-- GET /report/{id} - 获取报告
+- POST /upload-and-analyze - 上传并分析
+- GET /report/{sha256} - 获取报告
 - POST /ask - 问答
 - GET /functions/{sha256} - 获取函数列表
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import JSONResponse, FileResponse
-from pydantic import BaseModel
-from typing import Optional
+import re
+import uuid
 import tempfile
 import shutil
 from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from .pipeline import run_analysis
 from .reporter import ReportGenerator
@@ -22,16 +25,21 @@ from .database import Database
 from .analyzer import FunctionAnalyzer
 from .qa import QASystem
 from .llm import LLMFactory
+from .artifacts import compute_sha256, sample_artifact_dir, sample_upload_path, safe_filename
 
 app = FastAPI(
     title="Reverse-Agent API",
     description="自动化逆向分析 Agent API",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 # 全局实例
 db = Database("reverse_agent.db")
 llm_client = None
+
+# 路径配置
+UPLOAD_ROOT = Path("artifacts/uploads")
+RESULT_ROOT = Path("artifacts/results")
 
 
 def get_llm():
@@ -52,7 +60,6 @@ def get_llm():
 
 class AnalyzeRequest(BaseModel):
     sample_path: str
-    output_dir: str = "artifacts"
     skip_ghidra: bool = False
 
 
@@ -61,18 +68,11 @@ class AskRequest(BaseModel):
     question: str
 
 
-class FunctionInfo(BaseModel):
-    name: str
-    address: str
-    summary: str
-    behavior_tags: list[str]
-    confidence: float
-
-
 class AnalyzeResponse(BaseModel):
     status: str
     sample_sha256: str
     report_path: str
+    report_url: str
     function_count: int
     message: str
 
@@ -89,9 +89,10 @@ async def root():
     """API 根路径"""
     return {
         "name": "Reverse-Agent API",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "endpoints": [
             "POST /analyze - 分析样本",
+            "POST /upload-and-analyze - 上传并分析",
             "GET /report/{sha256} - 获取报告",
             "POST /ask - 问答",
             "GET /functions/{sha256} - 获取函数列表",
@@ -107,16 +108,20 @@ async def analyze_sample(request: AnalyzeRequest):
         raise HTTPException(status_code=404, detail=f"Sample not found: {request.sample_path}")
 
     try:
+        # 计算 SHA256 并确定输出目录
+        sha256 = compute_sha256(sample_path)
+        output_dir = sample_artifact_dir(RESULT_ROOT, sha256)
+
         # 执行分析
         result = run_analysis(
             sample_path=str(sample_path),
-            output_dir=request.output_dir,
+            output_dir=str(output_dir),
             skip_ghidra=request.skip_ghidra,
         )
 
         # 生成报告
-        reporter = ReportGenerator(request.output_dir)
-        report = reporter.generate(result)
+        reporter = ReportGenerator(str(output_dir))
+        reporter.generate(result)
 
         # 函数分析
         llm = get_llm()
@@ -137,7 +142,8 @@ async def analyze_sample(request: AnalyzeRequest):
         return AnalyzeResponse(
             status="success",
             sample_sha256=result.sample.sha256,
-            report_path=str(Path(request.output_dir) / "report.md"),
+            report_path=str(output_dir / "report.md"),
+            report_url=f"/report/{result.sample.sha256}",
             function_count=len(functions),
             message=f"Analysis complete. {len(functions)} functions analyzed.",
         )
@@ -152,24 +158,38 @@ async def upload_and_analyze(
     skip_ghidra: bool = False,
 ):
     """上传样本并分析"""
-    # 保存上传的文件
-    temp_dir = Path(tempfile.mkdtemp())
-    sample_path = temp_dir / file.filename
-
-    with open(sample_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # 创建临时目录保存上传文件
+    tmp_dir = Path(tempfile.mkdtemp(prefix="reverse_upload_"))
+    tmp_sample = tmp_dir / safe_filename(file.filename or "sample.bin")
 
     try:
-        output_dir = str(temp_dir / "artifacts")
+        # 保存上传文件
+        with tmp_sample.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        # 计算 SHA256
+        sha256 = compute_sha256(tmp_sample)
+
+        # 移动到持久目录
+        final_sample = sample_upload_path(UPLOAD_ROOT, sha256, file.filename or "sample.bin")
+        final_sample.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(tmp_sample), str(final_sample))
+
+        # 确定输出目录
+        output_dir = sample_artifact_dir(RESULT_ROOT, sha256)
+
+        # 执行分析
         result = run_analysis(
-            sample_path=str(sample_path),
-            output_dir=output_dir,
+            sample_path=str(final_sample),
+            output_dir=str(output_dir),
             skip_ghidra=skip_ghidra,
         )
 
-        reporter = ReportGenerator(output_dir)
-        report = reporter.generate(result)
+        # 生成报告
+        reporter = ReportGenerator(str(output_dir))
+        reporter.generate(result)
 
+        # 函数分析
         llm = get_llm()
         analyzer = FunctionAnalyzer(db, llm)
         functions = analyzer.analyze_sample(result)
@@ -177,26 +197,27 @@ async def upload_and_analyze(
         return {
             "status": "success",
             "sample_sha256": result.sample.sha256,
-            "report_path": str(Path(output_dir) / "report.md"),
+            "report_path": str(output_dir / "report.md"),
+            "report_url": f"/report/{result.sample.sha256}",
             "function_count": len(functions),
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # 清理临时文件
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        # 清理临时目录
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.get("/report/{sha256}")
 async def get_report(sha256: str):
     """获取分析报告"""
-    sessions = db.get_sessions_by_sha256(sha256)
-    if not sessions:
-        raise HTTPException(status_code=404, detail="Analysis not found")
+    # 验证 SHA256 格式
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        raise HTTPException(status_code=400, detail="Invalid sha256 format")
 
     # 查找报告文件
-    report_path = Path("artifacts") / "report.md"
+    report_path = sample_artifact_dir(RESULT_ROOT, sha256) / "report.md"
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="Report file not found")
 

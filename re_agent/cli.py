@@ -20,6 +20,7 @@ from .database import Database
 from .analyzer import FunctionAnalyzer
 from .qa import QASystem
 from .llm import LLMFactory
+from .artifacts import compute_sha256, sample_artifact_dir
 
 
 def setup_logging(verbose: bool = False):
@@ -56,14 +57,19 @@ def cmd_analyze(args):
         print(f"Error: Not a file: {sample_path}")
         return 1
 
-    # 创建输出目录
-    output_dir = Path(args.output)
+    # 计算 SHA256 并确定输出目录
+    sha256 = compute_sha256(sample_path)
+    if args.output:
+        output_dir = Path(args.output)
+    else:
+        output_dir = sample_artifact_dir("artifacts/results", sha256)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"{'='*60}")
     print(f"Reverse-Agent v0.3.0 - 静态分析 + 函数分析")
     print(f"{'='*60}")
     print(f"样本: {sample_path}")
+    print(f"SHA256: {sha256}")
     print(f"输出: {output_dir}")
     print(f"{'='*60}")
 
@@ -129,16 +135,22 @@ def cmd_dynamic(args):
         print(f"Error: Sample file not found: {sample_path}")
         return 1
 
-    # 获取样本 SHA256
-    from .schema import compute_hashes
-    hashes = compute_hashes(str(sample_path))
-    sample_sha256 = hashes["sha256"]
+    # 计算 SHA256
+    sha256 = compute_sha256(sample_path)
+
+    # 确定输出目录
+    if args.output:
+        output_dir = Path(args.output)
+    else:
+        output_dir = sample_artifact_dir("artifacts/results", sha256) / "dynamic"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"{'='*60}")
     print(f"Reverse-Agent v0.3.0 - 动态分析")
     print(f"{'='*60}")
     print(f"样本: {sample_path}")
-    print(f"SHA256: {sample_sha256}")
+    print(f"SHA256: {sha256}")
+    print(f"输出: {output_dir}")
     print(f"{'='*60}")
 
     # 安全警告
@@ -147,21 +159,23 @@ def cmd_dynamic(args):
         print("警告：动态分析将在沙箱中执行样本！")
         print("!"*60)
         print("\n安全措施：")
-        print("  - 执行超时: 60秒")
-        print("  - 网络: 默认禁用")
-        print("  - 文件系统: 隔离")
+        print("  - 执行环境: Docker container")
+        print("  - 网络: disabled")
+        print("  - rootfs: read-only")
+        print("  - capabilities: drop ALL")
+        print(f"  - 资源限制: memory=512m, cpus=1, pids=128, timeout={args.timeout}s")
         print("\n请确认后添加 --confirm 参数重新运行")
         return 0
 
     print("\n[Stage 3] 动态分析...")
-    print("  安全模式: 沙箱执行")
+    print("  安全模式: Docker 沙箱执行")
 
     from .dynamic_pipeline import run_dynamic_analysis
 
     result = run_dynamic_analysis(
         sample_path=str(sample_path),
-        sample_sha256=sample_sha256,
-        output_dir=args.output,
+        sample_sha256=sha256,
+        output_dir=str(output_dir),
         confirmed=True,
         enable_strace=not args.no_strace,
         enable_ltrace=not args.no_ltrace,
@@ -175,7 +189,7 @@ def cmd_dynamic(args):
     print(f"{'='*60}")
     print(f"\n摘要:")
     print(result.summary)
-    print(f"\n结果目录: {args.output}")
+    print(f"\n结果目录: {output_dir}")
 
     return 0
 
@@ -263,8 +277,7 @@ def main():
     )
     analyze_parser.add_argument(
         "-o", "--output",
-        default="artifacts",
-        help="输出目录 (默认: artifacts)",
+        help="输出目录 (默认: artifacts/results/<sha_prefix>/<sha256>)",
     )
     analyze_parser.add_argument(
         "--ghidra-home",
@@ -296,8 +309,7 @@ def main():
     )
     dynamic_parser.add_argument(
         "-o", "--output",
-        default="artifacts/dynamic",
-        help="输出目录 (默认: artifacts/dynamic)",
+        help="输出目录 (默认: artifacts/results/<sha_prefix>/<sha256>/dynamic)",
     )
     dynamic_parser.add_argument(
         "--confirm",
