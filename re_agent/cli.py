@@ -342,6 +342,7 @@ SAMPLE_PATH_TOOLS = {
     "decode_strings",
     "run_angr_stdout",
     "run_z3",
+    "run_python_snippet_sandbox",
 }
 
 

@@ -225,6 +225,7 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     registry.register(_write_artifact_tool(store))
     registry.register(_read_artifact_range_tool(store))
     registry.register(_list_artifacts_tool(store))
+    registry.register(_run_python_snippet_sandbox_tool(store))
     return registry
 
 
@@ -1810,3 +1811,160 @@ def _preview_artifact(path: Path, preview_lines: int) -> str:
 
     text = "\n".join(lines[:preview_lines])
     return text[:2000]
+
+
+# ========== run_python_snippet_sandbox 工具 ==========
+
+def _run_python_snippet_sandbox_tool(store: ArtifactStore) -> ToolSpec:
+    def handler(args: JsonDict) -> JsonDict:
+        code = args.get("code")
+        if not isinstance(code, str) or not code.strip():
+            return {
+                "summary": "code must be a non-empty string",
+                "data": {"ran": False, "reason": "invalid_code"},
+                "artifacts": [],
+            }
+
+        timeout = int(args.get("timeout", 10))
+        timeout = max(1, min(timeout, 60))
+
+        max_output_chars = int(args.get("max_output_chars", 8000))
+        max_output_chars = max(1000, min(max_output_chars, 50000))
+
+        sample_path_raw = args.get("sample_path")
+        if sample_path_raw:
+            sample_path = Path(str(sample_path_raw)).resolve()
+        else:
+            profile_path = store.path("profile.json")
+            if profile_path.exists():
+                try:
+                    profile = json.loads(profile_path.read_text(encoding="utf-8", errors="replace"))
+                    sample_path = Path(profile.get("sample_path", "")).resolve()
+                except Exception:
+                    sample_path = None
+            else:
+                sample_path = None
+
+        if sample_path is None or not sample_path.exists():
+            return {
+                "summary": "sample_path is required or profile.json must exist",
+                "data": {"ran": False, "reason": "missing_sample_path"},
+                "artifacts": [],
+            }
+
+        code_error = _validate_python_snippet_shape(code)
+        if code_error:
+            artifact = store.write_text_safe("snippets/rejected_snippet.py", code)
+            return {
+                "summary": f"python snippet rejected: {code_error}",
+                "data": {"ran": False, "reason": "snippet_rejected", "error": code_error},
+                "artifacts": [artifact],
+            }
+
+        snippet_name = f"snippets/snippet_{int(time.time() * 1000)}.py"
+        snippet_artifact = store.write_text_safe(snippet_name, code)
+
+        from ..sandbox import DockerSandbox, DockerSandboxConfig
+
+        sandbox = DockerSandbox(
+            DockerSandboxConfig(
+                timeout=timeout,
+                memory_mb=int(args.get("memory_mb", 256)),
+                cpus=float(args.get("cpus", 1.0)),
+                pids_limit=int(args.get("pids_limit", 64)),
+                enable_network=False,
+            )
+        )
+
+        shell_cmd = f"cd /out && python3 {_shell_quote_for_snippet('/out/' + snippet_artifact)}"
+
+        result = sandbox.run_shell(
+            sample_path=sample_path,
+            output_dir=store.root,
+            shell_cmd=shell_cmd,
+        )
+
+        stdout = (result.stdout or "")[-max_output_chars:]
+        stderr = (result.stderr or "")[-max_output_chars:]
+
+        payload = {
+            "ran": True,
+            "success": result.success,
+            "exit_code": result.exit_code,
+            "execution_time_ms": result.execution_time_ms,
+            "stdout_tail": stdout,
+            "stderr_tail": stderr,
+            "snippet_artifact": snippet_artifact,
+            "timeout": timeout,
+            "sample_path": str(sample_path),
+            "next_step": _suggest_next_after_python(stdout, stderr),
+        }
+
+        result_artifact = store.write_json_safe("run_python_snippet_result.json", payload)
+
+        return {
+            "summary": f"python snippet exited with code={result.exit_code}, success={result.success}",
+            "data": payload,
+            "artifacts": [snippet_artifact, result_artifact],
+        }
+
+    return ToolSpec(
+        name="run_python_snippet_sandbox",
+        description=(
+            "Run a small Python 3 snippet inside the Docker sandbox with no network. "
+            "Use this for local CTF RE calculations such as decoding arrays, xor/add transforms, "
+            "small brute force, or generating constraints JSON. Do not use it for arbitrary shell commands."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "sample_path": {"type": "string"},
+                "code": {"type": "string", "description": "Python 3 code to execute inside sandbox."},
+                "timeout": {"type": "integer", "default": 10, "minimum": 1, "maximum": 60},
+                "max_output_chars": {"type": "integer", "default": 8000, "minimum": 1000, "maximum": 50000},
+                "memory_mb": {"type": "integer", "default": 256, "minimum": 64, "maximum": 1024},
+                "cpus": {"type": "number", "default": 1.0, "minimum": 0.25, "maximum": 2.0},
+                "pids_limit": {"type": "integer", "default": 64, "minimum": 16, "maximum": 256},
+            },
+            "required": ["code"],
+            "additionalProperties": False,
+        },
+        handler=handler,
+    )
+
+
+def _validate_python_snippet_shape(code: str) -> str | None:
+    """轻量级 snippet 限制，真正安全边界是 Docker sandbox"""
+    if len(code) > 20000:
+        return "code is too large; max 20000 characters"
+
+    banned_markers = [
+        "socket.", "urllib.", "requests.", "http.client", "ftplib",
+        "paramiko", "subprocess.", "os.system", "pty.", "multiprocessing",
+    ]
+
+    low = code.lower()
+    for marker in banned_markers:
+        if marker in low:
+            return f"banned marker in code: {marker}"
+
+    return None
+
+
+def _suggest_next_after_python(stdout: str, stderr: str) -> str:
+    merged = f"{stdout}\n{stderr}".lower()
+
+    if "flag{" in merged or "ctf{" in merged:
+        return "validate_candidate"
+
+    if "constraints" in merged or '"length"' in merged:
+        return "write_artifact or run_z3"
+
+    if stderr.strip():
+        return "inspect stderr and revise snippet"
+
+    return "inspect stdout or continue analysis"
+
+
+def _shell_quote_for_snippet(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
