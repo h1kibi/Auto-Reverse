@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
     python3 \
     python3-pip \
+    coreutils \
+    bash \
+    binutils \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 10001 analyst
@@ -18,4 +21,4 @@ RUN useradd -m -u 10001 analyst
 USER analyst
 WORKDIR /work
 
-ENTRYPOINT ["/bin/bash", "-lc"]
+CMD ["/bin/sh"]
