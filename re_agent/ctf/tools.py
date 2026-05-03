@@ -226,6 +226,7 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     registry.register(_read_artifact_range_tool(store))
     registry.register(_list_artifacts_tool(store))
     registry.register(_run_python_snippet_sandbox_tool(store))
+    registry.register(_extract_arrays_from_decompile_tool(store))
     return registry
 
 
@@ -1968,3 +1969,241 @@ def _suggest_next_after_python(stdout: str, stderr: str) -> str:
 
 def _shell_quote_for_snippet(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+# ========== extract_arrays_from_decompile 工具 ==========
+
+def _extract_arrays_from_decompile_tool(store: ArtifactStore) -> ToolSpec:
+    def handler(args: JsonDict) -> JsonDict:
+        text = args.get("text")
+        source_path = args.get("source_path")
+        max_items = int(args.get("max_items", 30))
+        max_items = max(1, min(max_items, 200))
+
+        if isinstance(text, str) and text.strip():
+            source_label = "inline_text"
+            content = text
+        elif isinstance(source_path, str) and source_path.strip():
+            try:
+                payload = store.read_text_range_safe(
+                    source_path,
+                    start_line=int(args.get("start_line", 1)),
+                    max_lines=int(args.get("max_lines", 500)),
+                    max_chars=int(args.get("max_chars", 50000)),
+                )
+            except Exception as e:
+                return {
+                    "summary": f"failed to read source artifact: {e}",
+                    "data": {"found": False, "reason": "read_error", "error": str(e), "source_path": source_path},
+                    "artifacts": [],
+                }
+            source_label = source_path
+            content = payload["text"]
+        else:
+            return {
+                "summary": "text or source_path is required",
+                "data": {
+                    "found": False,
+                    "reason": "missing_source",
+                    "hint": "pass source_path from decompile_function/read_artifact_range, or inline text",
+                },
+                "artifacts": [],
+            }
+
+        items: list[dict[str, Any]] = []
+        items.extend(_extract_c_style_arrays(content))
+        items.extend(_extract_c_style_strings(content))
+        items.extend(_extract_scalar_assignments(content))
+
+        items = _dedup_extracted_items(items)
+        items = items[:max_items]
+
+        result_payload = {
+            "found": bool(items),
+            "source": source_label,
+            "item_count": len(items),
+            "items": items,
+            "next_step": (
+                "run_python_snippet_sandbox"
+                if items
+                else "read_artifact_range or decompile_function"
+            ),
+        }
+
+        artifact = store.write_json_safe("extract_arrays_result.json", result_payload)
+
+        return {
+            "summary": f"extract_arrays_from_decompile found {len(items)} item(s)",
+            "data": result_payload,
+            "artifacts": [artifact],
+        }
+
+    return ToolSpec(
+        name="extract_arrays_from_decompile",
+        description=(
+            "Extract arrays, string tables, and simple scalar constants from decompile excerpts. "
+            "Use this before run_python_snippet_sandbox or run_z3 when a check function contains "
+            "encoded arrays, lookup tables, xor/add constants, or byte comparisons."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string"},
+                "text": {"type": "string", "description": "Inline decompiled code excerpt."},
+                "start_line": {"type": "integer", "default": 1, "minimum": 1},
+                "max_lines": {"type": "integer", "default": 500, "minimum": 1, "maximum": 2000},
+                "max_chars": {"type": "integer", "default": 50000, "minimum": 1000, "maximum": 200000},
+                "max_items": {"type": "integer", "default": 30, "minimum": 1, "maximum": 200},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        handler=handler,
+    )
+
+
+def _extract_c_style_arrays(text: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    array_re = re.compile(
+        r"(?P<type>(?:unsigned\s+)?(?:char|byte|uchar|uint8_t|int|uint|uint32_t|long|short)(?:\s+\*)?)"
+        r"\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*=\s*\{(?P<body>[^{}]{1,20000})\}\s*;",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    for m in array_re.finditer(text):
+        body = m.group("body")
+        values = _parse_number_list(body)
+        if not values:
+            continue
+        out.append({
+            "kind": "array",
+            "name": m.group("name"),
+            "value_type": " ".join(m.group("type").split()),
+            "length": len(values),
+            "values": values,
+            "source": _compact_source(m.group(0)),
+        })
+
+    return out
+
+
+def _extract_c_style_strings(text: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    string_re = re.compile(
+        r"(?:(?:const\s+)?(?:char|byte|uchar|uint8_t)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*=\s*)"
+        r'(?P<quote>"(?:\\.|[^"\\])*")\s*;',
+        re.IGNORECASE,
+    )
+
+    for m in string_re.finditer(text):
+        raw = m.group("quote")
+        try:
+            value = bytes(raw[1:-1], "utf-8").decode("unicode_escape")
+        except Exception:
+            value = raw[1:-1]
+
+        b = value.encode("latin1", errors="replace")
+        out.append({
+            "kind": "string",
+            "name": m.group("name"),
+            "value": value,
+            "bytes": list(b),
+            "length": len(b),
+            "source": _compact_source(m.group(0)),
+        })
+
+    return out
+
+
+def _extract_scalar_assignments(text: str) -> list[dict[str, Any]]:
+    assignments: dict[str, list[dict[str, Any]]] = {}
+
+    assign_re = re.compile(
+        r"(?P<name>local_[0-9a-fA-F]+|DAT_[0-9a-fA-F]+|byte_[0-9a-fA-F]+|uVar[0-9]+|bVar[0-9]+)"
+        r"\s*=\s*(?P<value>0x[0-9a-fA-F]+|\d+)\s*;",
+    )
+
+    for m in assign_re.finditer(text):
+        name = m.group("name")
+        value = _parse_int_literal(m.group("value"))
+        if value is None:
+            continue
+        prefix = re.sub(r"[0-9a-fA-F]+$", "", name)
+        assignments.setdefault(prefix, []).append({
+            "name": name,
+            "value": value,
+            "source": _compact_source(m.group(0)),
+        })
+
+    out: list[dict[str, Any]] = []
+    for prefix, rows in assignments.items():
+        if len(rows) < 3:
+            continue
+        out.append({
+            "kind": "scalar_sequence",
+            "name": prefix.rstrip("_") or prefix,
+            "length": len(rows),
+            "values": [r["value"] for r in rows],
+            "members": rows[:100],
+            "source": "grouped scalar assignments",
+        })
+
+    return out
+
+
+def _parse_number_list(body: str) -> list[int]:
+    values: list[int] = []
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.DOTALL)
+    body = re.sub(r"//.*", " ", body)
+
+    token_re = re.compile(r"0x[0-9a-fA-F]+|-?\d+|'(?:\\.|[^'\\])'")
+
+    for token in token_re.findall(body):
+        value = _parse_int_literal(token)
+        if value is not None:
+            values.append(value)
+
+    return values
+
+
+def _parse_int_literal(token: str) -> int | None:
+    token = token.strip()
+    try:
+        if token.startswith(("0x", "0X")):
+            return int(token, 16)
+        if token.startswith("'") and token.endswith("'"):
+            inner = token[1:-1]
+            try:
+                decoded = bytes(inner, "utf-8").decode("unicode_escape")
+            except Exception:
+                decoded = inner
+            if decoded:
+                return ord(decoded[0])
+        return int(token, 10)
+    except Exception:
+        return None
+
+
+def _compact_source(source: str, max_chars: int = 500) -> str:
+    source = re.sub(r"\s+", " ", source).strip()
+    return source[:max_chars]
+
+
+def _dedup_extracted_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, Any]] = []
+
+    for item in items:
+        key = (
+            str(item.get("kind")),
+            str(item.get("name")),
+            json.dumps(item.get("values", item.get("value", "")), sort_keys=True, ensure_ascii=False)[:500],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+
+    return out
