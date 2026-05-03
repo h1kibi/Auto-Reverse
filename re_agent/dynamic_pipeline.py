@@ -3,23 +3,21 @@
 
 安全规则：
 - 必须人工确认后执行
+- 通过 Docker 沙箱执行，不在宿主机直接运行样本
 - 默认无网络
 - 资源限制
-- 自动保存日志
 """
 
+import json
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
 
-from .schema import AnalysisResult, ToolResult, ToolStatus, ArtifactType
 from .tools.dynamic_base import DynamicResult
 from .tools.strace_tool import StraceTool
 from .tools.ltrace_tool import LtraceTool
-from .tools.frida_tool import FridaTool
-from .sandbox import Sandbox, SandboxConfig, SandboxResult
-from .database import Database, FunctionSummary
+from .sandbox import DockerSandbox, DockerSandboxConfig
+from .database import Database
 from .llm import BaseLLMClient, ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -28,39 +26,28 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DynamicAnalysisConfig:
     """动态分析配置"""
-    # 工具开关
     enable_strace: bool = True
     enable_ltrace: bool = True
-    enable_frida: bool = True
-
-    # 沙箱配置
+    enable_frida: bool = False  # MVP 阶段默认关闭
     timeout: int = 60
     enable_network: bool = False
     max_memory_mb: int = 512
-
-    # Frida 配置
-    frida_hooks: list[str] = field(default_factory=lambda: ["network", "crypto", "file", "process"])
-
-    # 输出目录
     output_dir: str = "artifacts/dynamic"
+    sandbox_image: str = "reverse-agent-sandbox:latest"
 
 
 @dataclass
 class DynamicAnalysisResult:
     """动态分析结果"""
     sample_sha256: str
-    sandbox_result: Optional[SandboxResult] = None
     tool_results: list[DynamicResult] = field(default_factory=list)
     summary: str = ""
-    events: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "sample_sha256": self.sample_sha256,
-            "sandbox_result": self.sandbox_result.__dict__ if self.sandbox_result else None,
             "tool_results": [r.to_dict() for r in self.tool_results],
             "summary": self.summary,
-            "events": self.events[:1000],  # 限制大小
         }
 
 
@@ -86,11 +73,6 @@ class DynamicAnalysisPipeline:
             self.tools["strace"] = StraceTool(str(self.output_dir))
         if self.config.enable_ltrace:
             self.tools["ltrace"] = LtraceTool(str(self.output_dir))
-        if self.config.enable_frida:
-            self.tools["frida"] = FridaTool(
-                str(self.output_dir),
-                self.config.frida_hooks,
-            )
 
     def analyze(
         self,
@@ -107,49 +89,52 @@ class DynamicAnalysisPipeline:
             )
 
         logger.info(f"Starting dynamic analysis: {sample_path}")
+        logger.info(f"  Sandbox image: {self.config.sandbox_image}")
+        logger.info(f"  Network: {'enabled' if self.config.enable_network else 'disabled'}")
+        logger.info(f"  Timeout: {self.config.timeout}s")
 
         result = DynamicAnalysisResult(sample_sha256=sample_sha256)
 
-        # 1. 沙箱执行
-        logger.info("Step 1: Sandbox execution...")
-        sandbox_config = SandboxConfig(
-            max_execution_time=self.config.timeout,
+        # 创建 Docker 沙箱
+        sandbox = DockerSandbox(DockerSandboxConfig(
+            image=self.config.sandbox_image,
+            timeout=self.config.timeout,
+            memory_mb=self.config.max_memory_mb,
             enable_network=self.config.enable_network,
-            max_memory_mb=self.config.max_memory_mb,
-        )
-        sandbox = Sandbox(sandbox_config)
-        sandbox_result = sandbox.execute(sample_path)
-        result.sandbox_result = sandbox_result
+        ))
 
-        if not sandbox_result.success:
-            logger.warning(f"Sandbox execution failed: {sandbox_result.error}")
-            result.summary = f"Sandbox execution failed: {sandbox_result.error or sandbox_result.stderr[:200]}"
-            return result
-
-        # 2. 运行跟踪工具
-        logger.info("Step 2: Running trace tools...")
+        # 执行每个工具
         for tool_name, tool in self.tools.items():
-            logger.info(f"  Running {tool_name}...")
+            logger.info("Running %s in Docker sandbox...", tool_name)
+
             try:
-                tool_result = tool.run(sample_path, timeout=self.config.timeout)
+                command = tool.build_command()
+                sandbox_result = sandbox.run_tool(
+                    sample_path=sample_path,
+                    output_dir=self.output_dir,
+                    command_template=command,
+                )
+
+                tool_result = tool.parse_result(sandbox_result)
                 result.tool_results.append(tool_result)
-                logger.info(f"  {tool_name}: {tool_result.status}")
+
+                logger.info("  %s: %s", tool_name, tool_result.status)
+
             except Exception as e:
-                logger.error(f"  {tool_name} failed: {e}")
+                logger.exception("%s failed", tool_name)
                 result.tool_results.append(DynamicResult(
                     tool=tool_name,
                     status="failed",
                     errors=[str(e)],
                 ))
 
-        # 3. 生成摘要
-        logger.info("Step 3: Generating summary...")
+        # 生成摘要
         result.summary = self._generate_summary(result)
 
-        # 4. 保存结果
+        # 保存结果
         self._save_result(result)
 
-        # 5. 更新数据库（如果启用）
+        # 更新数据库
         if self.db:
             self._update_database(result)
 
@@ -160,32 +145,23 @@ class DynamicAnalysisPipeline:
         """生成动态分析摘要"""
         summary_parts = []
 
-        # 沙箱执行摘要
-        if result.sandbox_result:
-            sb = result.sandbox_result
-            summary_parts.append(f"执行时间: {sb.execution_time_ms}ms")
-            summary_parts.append(f"退出码: {sb.exit_code}")
-            if sb.peak_memory_mb > 0:
-                summary_parts.append(f"峰值内存: {sb.peak_memory_mb:.1f}MB")
-
-        # 工具结果摘要
         for tr in result.tool_results:
             if tr.summary:
-                summary_parts.append(f"\n[{tr.tool}]")
+                summary_parts.append(f"[{tr.tool}]")
                 summary_parts.append(tr.summary)
+                summary_parts.append("")
 
         # 使用 LLM 分析（如果有）
         if self.llm and result.tool_results:
             llm_summary = self._llm_analyze(result)
             if llm_summary:
-                summary_parts.append(f"\n[LLM 分析]")
+                summary_parts.append("[LLM 分析]")
                 summary_parts.append(llm_summary)
 
-        return "\n".join(summary_parts)
+        return "\n".join(summary_parts) if summary_parts else "No analysis results"
 
     def _llm_analyze(self, result: DynamicAnalysisResult) -> str:
         """使用 LLM 分析动态行为"""
-        # 收集所有工具的摘要
         tool_summaries = []
         for tr in result.tool_results:
             if tr.summary:
@@ -195,7 +171,6 @@ class DynamicAnalysisPipeline:
             return ""
 
         context = "\n\n".join(tool_summaries)
-
         prompt = f"""分析以下动态执行结果，总结样本的行为特征。
 
 {context}
@@ -215,15 +190,12 @@ class DynamicAnalysisPipeline:
 
     def _save_result(self, result: DynamicAnalysisResult):
         """保存分析结果"""
-        import json
-
         result_file = self.output_dir / "dynamic_result.json"
         result_file.write_text(
             json.dumps(result.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
-        # 保存摘要
         summary_file = self.output_dir / "dynamic_summary.txt"
         summary_file.write_text(result.summary, encoding="utf-8")
 
@@ -231,8 +203,6 @@ class DynamicAnalysisPipeline:
 
     def _update_database(self, result: DynamicAnalysisResult):
         """更新数据库"""
-        # 从动态分析中提取函数信息
-        # 这里可以根据需要扩展
         pass
 
 
@@ -243,7 +213,7 @@ def run_dynamic_analysis(
     confirmed: bool = False,
     enable_strace: bool = True,
     enable_ltrace: bool = True,
-    enable_frida: bool = True,
+    enable_frida: bool = False,
     timeout: int = 60,
 ) -> DynamicAnalysisResult:
     """便捷函数：执行动态分析"""
