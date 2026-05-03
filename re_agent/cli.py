@@ -3,6 +3,7 @@ CLI 入口 - 命令行界面
 
 用法:
     python -m re_agent analyze <sample_path>           # 静态分析
+    python -m re_agent dynamic <sample_path>           # 动态分析（需确认）
     python -m re_agent ask <sha256> "问题"              # 问答
     python -m re_agent serve                            # 启动 API
     python -m re_agent functions <sha256>               # 列出函数
@@ -45,7 +46,7 @@ def get_llm_client():
 
 
 def cmd_analyze(args):
-    """执行分析命令"""
+    """执行静态分析命令"""
     sample_path = Path(args.sample)
     if not sample_path.exists():
         print(f"Error: Sample file not found: {sample_path}")
@@ -60,7 +61,7 @@ def cmd_analyze(args):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"{'='*60}")
-    print(f"Reverse-Agent v0.2.0 - 静态分析 + 函数分析")
+    print(f"Reverse-Agent v0.3.0 - 静态分析 + 函数分析")
     print(f"{'='*60}")
     print(f"样本: {sample_path}")
     print(f"输出: {output_dir}")
@@ -96,7 +97,6 @@ def cmd_analyze(args):
             print("  使用 LLM 生成函数摘要...")
         else:
             print("  未配置 LLM API，使用启发式摘要...")
-            print("  (设置 MIMO_API_KEY 或 OPENAI_API_KEY 环境变量启用 LLM)")
 
         analyzer = FunctionAnalyzer(db, llm)
         functions = analyzer.analyze_sample(result)
@@ -106,34 +106,76 @@ def cmd_analyze(args):
 
     # 打印摘要
     print(f"\n{'='*60}")
-    print("分析完成!")
+    print("静态分析完成!")
     print(f"{'='*60}")
     print(f"样本 SHA256: {result.sample.sha256}")
-    print(f"执行工具数: {len(result.tool_results)}")
-    print(f"Artifact 数: {sum(len(tr.artifacts) for tr in result.tool_results)}")
     print(f"\n报告: {output_dir / 'report.md'}")
     print(f"数据库: {output_dir / 'database.db'}")
-    print(f"Artifact: {output_dir}/")
     print(f"{'='*60}")
 
-    # 打印工具执行摘要
-    print("\n工具执行摘要:")
-    for tr in result.tool_results:
-        status_icon = {
-            "success": "[OK]",
-            "failed": "[FAIL]",
-            "partial": "[PARTIAL]",
-            "skipped": "[SKIP]",
-        }.get(tr.status.value, "[?]")
-        print(f"  {status_icon} {tr.tool}: {tr.status.value} ({tr.runtime_ms}ms)")
+    # 提示下一步
+    print(f"\n下一步：")
+    print(f"  动态分析: python -m re_agent dynamic {sample_path} --confirm")
+    print(f"  查看函数: python -m re_agent functions {result.sample.sha256[:16]}...")
+    print(f"  问答: python -m re_agent ask {result.sample.sha256[:16]}... \"哪个函数处理网络？\"")
 
-    # 提示问答命令
-    if not args.skip_function_analysis:
-        print(f"\n{'='*60}")
-        print("下一步：")
-        print(f"  查看函数: python -m re_agent functions {result.sample.sha256[:16]}...")
-        print(f"  问答: python -m re_agent ask {result.sample.sha256[:16]}... \"哪个函数处理网络？\"")
-        print(f"{'='*60}")
+    return 0
+
+
+def cmd_dynamic(args):
+    """执行动态分析命令"""
+    sample_path = Path(args.sample)
+    if not sample_path.exists():
+        print(f"Error: Sample file not found: {sample_path}")
+        return 1
+
+    # 获取样本 SHA256
+    from .schema import compute_hashes
+    hashes = compute_hashes(str(sample_path))
+    sample_sha256 = hashes["sha256"]
+
+    print(f"{'='*60}")
+    print(f"Reverse-Agent v0.3.0 - 动态分析")
+    print(f"{'='*60}")
+    print(f"样本: {sample_path}")
+    print(f"SHA256: {sample_sha256}")
+    print(f"{'='*60}")
+
+    # 安全警告
+    if not args.confirm:
+        print("\n" + "!"*60)
+        print("警告：动态分析将在沙箱中执行样本！")
+        print("!"*60)
+        print("\n安全措施：")
+        print("  - 执行超时: 60秒")
+        print("  - 网络: 默认禁用")
+        print("  - 文件系统: 隔离")
+        print("\n请确认后添加 --confirm 参数重新运行")
+        return 0
+
+    print("\n[Stage 3] 动态分析...")
+    print("  安全模式: 沙箱执行")
+
+    from .dynamic_pipeline import run_dynamic_analysis
+
+    result = run_dynamic_analysis(
+        sample_path=str(sample_path),
+        sample_sha256=sample_sha256,
+        output_dir=args.output,
+        confirmed=True,
+        enable_strace=not args.no_strace,
+        enable_ltrace=not args.no_ltrace,
+        enable_frida=not args.no_frida,
+        timeout=args.timeout,
+    )
+
+    # 打印结果
+    print(f"\n{'='*60}")
+    print("动态分析完成!")
+    print(f"{'='*60}")
+    print(f"\n摘要:")
+    print(result.summary)
+    print(f"\n结果目录: {args.output}")
 
     return 0
 
@@ -210,10 +252,10 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 
-    # analyze 命令
+    # ========== analyze 命令 ==========
     analyze_parser = subparsers.add_parser(
         "analyze",
-        help="分析二进制文件",
+        help="静态分析",
     )
     analyze_parser.add_argument(
         "sample",
@@ -226,7 +268,7 @@ def main():
     )
     analyze_parser.add_argument(
         "--ghidra-home",
-        help="Ghidra 安装路径 (或设置 GHIDRA_HOME 环境变量)",
+        help="Ghidra 安装路径",
     )
     analyze_parser.add_argument(
         "--yara-rules",
@@ -243,7 +285,48 @@ def main():
         help="跳过函数分析",
     )
 
-    # functions 命令
+    # ========== dynamic 命令 ==========
+    dynamic_parser = subparsers.add_parser(
+        "dynamic",
+        help="动态分析（需确认）",
+    )
+    dynamic_parser.add_argument(
+        "sample",
+        help="样本文件路径",
+    )
+    dynamic_parser.add_argument(
+        "-o", "--output",
+        default="artifacts/dynamic",
+        help="输出目录 (默认: artifacts/dynamic)",
+    )
+    dynamic_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="确认执行动态分析",
+    )
+    dynamic_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+        help="执行超时（秒）",
+    )
+    dynamic_parser.add_argument(
+        "--no-strace",
+        action="store_true",
+        help="禁用 strace",
+    )
+    dynamic_parser.add_argument(
+        "--no-ltrace",
+        action="store_true",
+        help="禁用 ltrace",
+    )
+    dynamic_parser.add_argument(
+        "--no-frida",
+        action="store_true",
+        help="禁用 Frida",
+    )
+
+    # ========== functions 命令 ==========
     functions_parser = subparsers.add_parser(
         "functions",
         help="列出函数",
@@ -262,7 +345,7 @@ def main():
         help="数据库路径",
     )
 
-    # ask 命令
+    # ========== ask 命令 ==========
     ask_parser = subparsers.add_parser(
         "ask",
         help="问答",
@@ -281,7 +364,7 @@ def main():
         help="数据库路径",
     )
 
-    # serve 命令
+    # ========== serve 命令 ==========
     serve_parser = subparsers.add_parser(
         "serve",
         help="启动 API 服务",
@@ -308,6 +391,8 @@ def main():
 
     if args.command == "analyze":
         return cmd_analyze(args)
+    elif args.command == "dynamic":
+        return cmd_dynamic(args)
     elif args.command == "functions":
         return cmd_functions(args)
     elif args.command == "ask":
