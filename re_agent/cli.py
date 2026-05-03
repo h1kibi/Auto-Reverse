@@ -339,6 +339,16 @@ def cmd_agent_tools(args):
             "function": args.function,
             "max_lines": args.max_lines,
         }
+    elif args.tool == "decode_strings":
+        payload = {
+            "sample_path": str(sample),
+            "flag_regex": args.flag_regex,
+            "timeout": args.timeout,
+        }
+    elif args.tool == "rank_functions":
+        payload = {
+            "max_functions": args.max_functions,
+        }
     else:
         print(f"Error: unknown tool: {args.tool}")
         print(f"Available tools: {', '.join(registry.names())}")
@@ -642,6 +652,17 @@ def main():
         type=int,
         default=80,
         help="decompile_function 最大行数",
+    )
+    agent_tools_parser.add_argument(
+        "--flag-regex",
+        default=r"(?:flag|ctf)\{[^}\r\n]{1,160}\}",
+        help="decode_strings 的 flag 正则表达式",
+    )
+    agent_tools_parser.add_argument(
+        "--max-functions",
+        type=int,
+        default=10,
+        help="rank_functions 最大函数数量",
     )
 
     # ========== agent 命令 ==========
