@@ -63,6 +63,14 @@ class AnalyzeRequest(BaseModel):
     skip_ghidra: bool = False
 
 
+class SolveRequest(BaseModel):
+    sample_path: str
+    flag_regex: str = r"(flag|ctf|picoCTF|hgame|nssctf|h1kibi)\{[^}\r\n]{1,160}\}"
+    skip_ghidra: bool = True
+    timeout: int = 120
+    validate: bool = True
+
+
 class AskRequest(BaseModel):
     sample_sha256: str
     question: str
@@ -75,6 +83,14 @@ class AnalyzeResponse(BaseModel):
     report_url: str
     function_count: int
     message: str
+
+
+class SolveResponse(BaseModel):
+    status: str
+    sample_sha256: str
+    flag: str | None
+    method: str
+    result_path: str
 
 
 class AskResponse(BaseModel):
@@ -222,6 +238,40 @@ async def get_report(sha256: str):
         raise HTTPException(status_code=404, detail="Report file not found")
 
     return FileResponse(report_path, media_type="text/markdown")
+
+
+@app.post("/solve", response_model=SolveResponse)
+async def solve_sample(request: SolveRequest):
+    """CTF 求解"""
+    from .ctf.pipeline import solve_challenge
+
+    sample = Path(request.sample_path)
+    if not sample.exists():
+        raise HTTPException(status_code=404, detail="Sample not found")
+
+    try:
+        sha256 = compute_sha256(sample)
+        output_dir = sample_artifact_dir(RESULT_ROOT, sha256)
+
+        result = solve_challenge(
+            sample_path=str(sample),
+            output_dir=str(output_dir),
+            flag_regex=request.flag_regex,
+            skip_ghidra=request.skip_ghidra,
+            timeout=request.timeout,
+            validate=request.validate,
+        )
+
+        return SolveResponse(
+            status=result.status,
+            sample_sha256=result.sha256,
+            flag=result.best_flag,
+            method=result.method,
+            result_path=str(output_dir / "solve_result.json"),
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/functions/{sha256}")
