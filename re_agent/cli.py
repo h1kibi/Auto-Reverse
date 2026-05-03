@@ -336,7 +336,12 @@ def _load_agent_tool_extra_args(args) -> dict:
     return payload
 
 
-SAMPLE_PATH_TOOLS = {"profile_sample", "validate_candidate", "decode_strings"}
+SAMPLE_PATH_TOOLS = {
+    "profile_sample",
+    "validate_candidate",
+    "decode_strings",
+    "run_angr_stdout",
+}
 
 
 def _build_legacy_agent_tool_payload(args, sample: Path, registry) -> dict:

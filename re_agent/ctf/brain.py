@@ -39,7 +39,10 @@ SYSTEM_PROMPT = """你是 Auto-Reverse 的 CTF Reverse Agent。
 - 如果 decode_strings 返回 candidates，必须逐个调用 validate_candidate 验证，直到 accepted=true 或候选耗尽；
 - 如果 profile_sample 没有 flag_like / encoded_like，但有 success_strings 或 failure_strings，调用 rank_functions；
 - 如果 rank_functions 返回 suspicious functions，调用 decompile_function 查看 top function；
-- decode_strings 和 rank_functions 的输出仍然只是证据，不是最终结论。
+- 如果 profile_sample 没有 flag_like / encoded_like，但存在 success_strings 或 failure_strings，并且目标是 CTF reverse 求解，可以调用 run_angr_stdout；
+- run_angr_stdout 返回的 candidate 仍然不是最终答案，必须调用 validate_candidate 验证；
+- 优先使用较短 lengths，例如 [8, 12, 16, 24, 32]，如果失败再考虑 [40, 48, 64]；
+- decode_strings、rank_functions、run_angr_stdout 的输出仍然只是证据，不是最终结论。
 
 输出最终报告时包含：
 - solved: true/false

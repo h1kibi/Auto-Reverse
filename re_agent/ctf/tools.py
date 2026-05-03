@@ -144,6 +144,7 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     registry.register(_decompile_function_tool(store))
     registry.register(_decode_strings_tool(store))
     registry.register(_rank_functions_tool(store))
+    registry.register(_run_angr_stdout_tool(store))
     return registry
 
 
@@ -891,3 +892,287 @@ def _compact_code_excerpt(block: str, max_lines: int = 30) -> str:
         interesting = lines[:max_lines]
 
     return "\n".join(_dedup_strings(interesting)[:max_lines])
+
+
+# ========== run_angr_stdout 工具 ==========
+
+def _run_angr_stdout_tool(store: ArtifactStore) -> ToolSpec:
+    def handler(args: JsonDict) -> JsonDict:
+        sample_path = Path(args["sample_path"]).resolve()
+        input_modes = args.get("input_modes", ["argv", "stdin"])
+        lengths = args.get("lengths", [8, 12, 16, 24, 32, 40, 48, 64])
+        timeout = int(args.get("timeout", 60))
+        max_candidates = int(args.get("max_candidates", 5))
+
+        success_needles = args.get(
+            "success_needles",
+            ["correct", "success", "accepted", "congrat", "you win", "well done"],
+        )
+        failure_needles = args.get(
+            "failure_needles",
+            ["wrong", "incorrect", "fail", "invalid", "try again", "nope"],
+        )
+
+        flag_regex = args.get(
+            "flag_regex",
+            r"(?:flag|ctf|picoCTF|hgame|nssctf|h1kibi)\{[^}\r\n]{1,160}\}",
+        )
+
+        try:
+            import angr
+            import claripy
+        except ImportError:
+            return {
+                "summary": "angr or claripy is not installed. Install with: pip install -e '.[ctf]'",
+                "data": {
+                    "found": False,
+                    "reason": "missing_angr",
+                    "install_hint": "pip install -e '.[ctf]'",
+                },
+                "artifacts": [],
+            }
+
+        project = angr.Project(str(sample_path), auto_load_libs=False)
+
+        success_bytes = _to_needles(success_needles)
+        failure_bytes = _to_needles(failure_needles)
+        regex = re.compile(flag_regex, re.IGNORECASE)
+
+        candidates: list[dict[str, Any]] = []
+        attempts: list[dict[str, Any]] = []
+
+        for mode in input_modes:
+            if mode not in {"argv", "stdin"}:
+                attempts.append({
+                    "mode": mode,
+                    "status": "skipped",
+                    "reason": "unsupported input mode",
+                })
+                continue
+
+            for length in lengths:
+                if len(candidates) >= max_candidates:
+                    break
+
+                result = _angr_try_stdout_path(
+                    project=project,
+                    sample_path=sample_path,
+                    mode=mode,
+                    length=int(length),
+                    timeout=timeout,
+                    success_needles=success_bytes,
+                    failure_needles=failure_bytes,
+                    regex=regex,
+                )
+
+                attempts.append(result["attempt"])
+
+                for c in result["candidates"]:
+                    if not any(x["value"] == c["value"] for x in candidates):
+                        candidates.append(c)
+
+            if len(candidates) >= max_candidates:
+                break
+
+        payload = {
+            "found": bool(candidates),
+            "candidate_count": len(candidates),
+            "candidates": candidates[:max_candidates],
+            "attempts": attempts,
+            "config": {
+                "input_modes": input_modes,
+                "lengths": lengths,
+                "timeout": timeout,
+                "success_needles": success_needles,
+                "failure_needles": failure_needles,
+            },
+        }
+
+        artifact = store.write_json("run_angr_stdout_result.json", payload)
+
+        return {
+            "summary": (
+                f"run_angr_stdout found {len(candidates)} candidate(s) "
+                f"after {len(attempts)} attempt(s)"
+            ),
+            "data": {
+                "found": bool(candidates),
+                "candidate_count": len(candidates),
+                "candidates": candidates[:max_candidates],
+                "next_step": "validate_candidate" if candidates else "decompile_function or rank_functions",
+            },
+            "artifacts": [artifact],
+        }
+
+    return ToolSpec(
+        name="run_angr_stdout",
+        description=(
+            "Use angr symbolic execution and stdout/stderr success predicates "
+            "to find argv/stdin inputs reaching success output."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "sample_path": {"type": "string"},
+                "input_modes": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["argv", "stdin"]},
+                    "default": ["argv", "stdin"],
+                },
+                "lengths": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "default": [8, 12, 16, 24, 32, 40, 48, 64],
+                },
+                "timeout": {"type": "integer", "default": 60},
+                "max_candidates": {"type": "integer", "default": 5},
+                "success_needles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": ["correct", "success", "accepted", "congrat"],
+                },
+                "failure_needles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": ["wrong", "incorrect", "fail", "invalid"],
+                },
+                "flag_regex": {
+                    "type": "string",
+                    "default": r"(?:flag|ctf)\{[^}\r\n]{1,160}\}",
+                },
+            },
+            "required": ["sample_path"],
+            "additionalProperties": False,
+        },
+        handler=handler,
+    )
+
+
+def _angr_try_stdout_path(
+    project,
+    sample_path: Path,
+    mode: str,
+    length: int,
+    timeout: int,
+    success_needles: list[bytes],
+    failure_needles: list[bytes],
+    regex: re.Pattern,
+) -> dict[str, Any]:
+    import angr
+    import claripy
+
+    sym = claripy.BVS(f"input_{mode}_{length}", length * 8)
+
+    add_options = {
+        angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+        angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+    }
+
+    try:
+        if mode == "argv":
+            state = project.factory.full_init_state(
+                args=[str(sample_path), sym],
+                add_options=add_options,
+            )
+        elif mode == "stdin":
+            stdin = claripy.Concat(sym, claripy.BVV(b"\n"))
+            state = project.factory.full_init_state(
+                args=[str(sample_path)],
+                stdin=stdin,
+                add_options=add_options,
+            )
+        else:
+            return {
+                "attempt": {"mode": mode, "length": length, "status": "skipped", "reason": "unsupported mode"},
+                "candidates": [],
+            }
+
+        for b in sym.chop(8):
+            state.solver.add(b >= 0x20)
+            state.solver.add(b <= 0x7E)
+
+        simgr = project.factory.simulation_manager(state)
+
+        def is_success(s) -> bool:
+            out = _angr_state_output(s)
+            return any(n in out for n in success_needles)
+
+        def is_failure(s) -> bool:
+            out = _angr_state_output(s)
+            return any(n in out for n in failure_needles)
+
+        simgr.explore(find=is_success, avoid=is_failure, num_find=3, timeout=timeout)
+
+        candidates: list[dict[str, Any]] = []
+
+        for found in simgr.found[:3]:
+            try:
+                raw = found.solver.eval(sym, cast_to=bytes)
+            except Exception:
+                continue
+
+            text = raw.split(b"\x00")[0].decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+
+            match = regex.search(text)
+            value = match.group(0) if match else text
+
+            stdout_tail = found.posix.dumps(1).decode("utf-8", errors="replace")[-500:]
+            stderr_tail = found.posix.dumps(2).decode("utf-8", errors="replace")[-500:]
+
+            candidates.append({
+                "value": value,
+                "mode": mode,
+                "length": length,
+                "confidence": 0.88 if match else 0.70,
+                "evidence": [
+                    "angr reached stdout/stderr success predicate",
+                    f"mode={mode}",
+                    f"length={length}",
+                ],
+                "stdout_tail": stdout_tail,
+                "stderr_tail": stderr_tail,
+            })
+
+        return {
+            "attempt": {
+                "mode": mode,
+                "length": length,
+                "status": "found" if candidates else "not_found",
+                "found_count": len(candidates),
+                "active": len(simgr.active),
+                "deadended": len(simgr.deadended),
+                "avoided": len(simgr.avoided),
+            },
+            "candidates": candidates,
+        }
+
+    except Exception as e:
+        return {
+            "attempt": {"mode": mode, "length": length, "status": "error", "error": repr(e)},
+            "candidates": [],
+        }
+
+
+def _angr_state_output(state) -> bytes:
+    try:
+        stdout = state.posix.dumps(1)
+    except Exception:
+        stdout = b""
+
+    try:
+        stderr = state.posix.dumps(2)
+    except Exception:
+        stderr = b""
+
+    return (stdout + b"\n" + stderr).lower()
+
+
+def _to_needles(values: list[str]) -> list[bytes]:
+    out: list[bytes] = []
+    for value in values:
+        b = str(value).lower().encode("utf-8", errors="ignore")
+        if b:
+            out.append(b)
+    return out
