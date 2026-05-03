@@ -252,6 +252,59 @@ def cmd_serve(args):
     return 0
 
 
+def cmd_solve(args):
+    """CTF 求解命令"""
+    from .artifacts import compute_sha256, sample_artifact_dir
+    from .ctf.pipeline import solve_challenge
+
+    sample = Path(args.sample)
+    if not sample.exists():
+        print(f"Error: Sample not found: {sample}")
+        return 1
+
+    sha256 = compute_sha256(sample)
+    output_dir = Path(args.output) if args.output else sample_artifact_dir("artifacts/results", sha256)
+
+    print(f"{'='*60}")
+    print(f"Reverse-Agent CTF Solver")
+    print(f"{'='*60}")
+    print(f"样本: {sample}")
+    print(f"SHA256: {sha256}")
+    print(f"输出: {output_dir}")
+    print(f"Flag Regex: {args.flag_regex}")
+    print(f"{'='*60}")
+
+    result = solve_challenge(
+        sample_path=str(sample),
+        output_dir=str(output_dir),
+        flag_regex=args.flag_regex,
+        skip_ghidra=args.skip_ghidra,
+        timeout=args.timeout,
+        validate=not args.no_validate,
+    )
+
+    print(f"\n{'='*60}")
+    print(f"Solve Status: {result.status}")
+    print(f"SHA256: {result.sha256}")
+    print(f"Method: {result.method or '-'}")
+
+    if result.best_flag:
+        print(f"FLAG: {result.best_flag}")
+    else:
+        print("FLAG: <not found>")
+
+    if result.candidates:
+        print(f"\nCandidates ({len(result.candidates)}):")
+        for i, c in enumerate(result.candidates[:5], 1):
+            verified = "[VERIFIED]" if c.verified else ""
+            print(f"  {i}. {c.value} (confidence: {c.confidence:.0%}) {verified}")
+
+    print(f"\nResult: {output_dir / 'solve_result.json'}")
+    print(f"{'='*60}")
+
+    return 0 if result.status == "solved" else 2
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -376,6 +429,42 @@ def main():
         help="数据库路径",
     )
 
+    # ========== solve 命令 ==========
+    solve_parser = subparsers.add_parser(
+        "solve",
+        help="一键 CTF Reverse 解题",
+    )
+    solve_parser.add_argument(
+        "sample",
+        help="挑战文件路径",
+    )
+    solve_parser.add_argument(
+        "-o", "--output",
+        help="输出目录",
+    )
+    solve_parser.add_argument(
+        "--flag-regex",
+        default=r"(flag|ctf|picoCTF|hgame|nssctf|h1kibi)\{[^}\r\n]{1,160}\}",
+        help="Flag 正则表达式",
+    )
+    solve_parser.add_argument(
+        "--skip-ghidra",
+        action="store_true",
+        default=True,
+        help="跳过 Ghidra 分析",
+    )
+    solve_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help="超时时间（秒）",
+    )
+    solve_parser.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="跳过验证",
+    )
+
     # ========== serve 命令 ==========
     serve_parser = subparsers.add_parser(
         "serve",
@@ -405,6 +494,8 @@ def main():
         return cmd_analyze(args)
     elif args.command == "dynamic":
         return cmd_dynamic(args)
+    elif args.command == "solve":
+        return cmd_solve(args)
     elif args.command == "functions":
         return cmd_functions(args)
     elif args.command == "ask":
