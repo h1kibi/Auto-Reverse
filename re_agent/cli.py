@@ -352,6 +352,75 @@ def cmd_agent_tools(args):
     return 0 if result.get("ok") else 2
 
 
+def cmd_agent(args):
+    """运行 OpenAI Brain + 本地 CTF 工具"""
+    import json
+    import os
+    from .ctf.brain import OpenAIBrain
+    from .ctf.tools import ArtifactStore
+
+    # 检查 API Key
+    if not os.environ.get("OPENAI_API_KEY"):
+        print("Error: OPENAI_API_KEY is not set")
+        print("Please set it: export OPENAI_API_KEY='...'")
+        return 1
+
+    sample = Path(args.sample).resolve()
+    if not sample.exists():
+        print(f"Error: Sample not found: {sample}")
+        return 1
+
+    output_dir = Path(args.output or f"artifacts/agent_{sample.stem}").resolve()
+    store = ArtifactStore(output_dir)
+
+    print(f"{'='*60}")
+    print(f"Auto-Reverse Agent")
+    print(f"{'='*60}")
+    print(f"Sample: {sample}")
+    print(f"Goal: {args.goal}")
+    print(f"Model: {args.model}")
+    print(f"Max steps: {args.max_steps}")
+    print(f"Output: {output_dir}")
+    print(f"{'='*60}")
+
+    try:
+        brain = OpenAIBrain(
+            store=store,
+            model=args.model,
+            max_steps=args.max_steps,
+        )
+    except Exception as e:
+        print(f"Error initializing OpenAI Brain: {e}")
+        return 1
+
+    print("\nRunning agent...\n")
+
+    try:
+        result = brain.run(
+            sample_path=str(sample),
+            goal=args.goal,
+        )
+    except Exception as e:
+        print(f"Error running OpenAI Brain: {e}")
+        return 1
+
+    print(result.get("final_answer") or "")
+    print()
+    print(json.dumps(
+        {
+            "status": result.get("status"),
+            "solved": result.get("solved"),
+            "flag": result.get("flag"),
+            "artifacts": result.get("artifacts"),
+            "output_dir": str(output_dir),
+        },
+        ensure_ascii=False,
+        indent=2,
+    ))
+
+    return 0 if result.get("solved") else 2
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -575,6 +644,36 @@ def main():
         help="decompile_function 最大行数",
     )
 
+    # ========== agent 命令 ==========
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="运行 OpenAI Brain + 本地 CTF 工具",
+    )
+    agent_parser.add_argument(
+        "sample",
+        help="挑战文件路径",
+    )
+    agent_parser.add_argument(
+        "--goal",
+        default="solve this CTF reverse challenge",
+        help="Agent 目标",
+    )
+    agent_parser.add_argument(
+        "-o", "--output",
+        help="输出目录",
+    )
+    agent_parser.add_argument(
+        "--model",
+        default="gpt-4o",
+        help="OpenAI 模型名",
+    )
+    agent_parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=8,
+        help="最大工具调用轮数",
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -591,6 +690,8 @@ def main():
         return cmd_solve(args)
     elif args.command == "agent-tools":
         return cmd_agent_tools(args)
+    elif args.command == "agent":
+        return cmd_agent(args)
     elif args.command == "functions":
         return cmd_functions(args)
     elif args.command == "ask":
