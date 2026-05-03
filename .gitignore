@@ -1,11 +1,9 @@
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.egg-info/
 dist/
 build/
 .eggs/
-*.egg
 
 # 测试输出
 test_output/
@@ -13,9 +11,11 @@ test_output*/
 
 # 数据库
 *.db
+reverse_agent.db
 
 # artifacts
 artifacts/
+!artifacts/.gitkeep
 
 # IDE
 .vscode/

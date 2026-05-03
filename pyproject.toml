@@ -1,0 +1,31 @@
+[project]
+name = "reverse-agent"
+version = "0.3.0"
+description = "Automated reverse engineering analysis agent"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.28.0",
+  "pefile>=2023.2.7",
+  "fastapi>=0.100.0",
+  "uvicorn[standard]>=0.23.0",
+  "python-multipart>=0.0.6",
+]
+
+[project.optional-dependencies]
+yara = ["yara-python>=4.0.0"]
+dynamic = ["frida-tools>=12.0.0"]
+dev = [
+  "pytest>=7.0.0",
+  "ruff>=0.4.0",
+]
+
+[project.scripts]
+reverse-agent = "re_agent.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
