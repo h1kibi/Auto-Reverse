@@ -2,9 +2,10 @@
 函数分析模块 - 关键函数识别与摘要生成
 
 核心功能：
-- 自动找关键函数（按字符串引用、API 调用、图中心性排序）
+- 自动找关键函数（按字符串引用、API 调用、行为标签排序）
 - 给每个函数生成自然语言摘要
 - 维护 function summary database
+- 评分带 reasons（可解释性）
 """
 
 import json
@@ -106,56 +107,83 @@ class FunctionAnalyzer:
 
     def _rank_functions(self, functions: list[dict], result: AnalysisResult) -> list[dict]:
         """对函数进行排序，识别关键函数"""
-        # 计算每个函数的重要性分数
         scored_functions = []
 
-        # 获取字符串列表（用于检测引用）
+        # 获取字符串列表
         strings = self._extract_strings(result)
+        strings_lower = [s.lower() for s in strings[:1000]]
 
         # 获取导入函数列表
         imports = self._extract_imports(result)
+        imports_lower = [i.lower() for i in imports]
 
         for func in functions:
-            score = 0
+            score = 0.0
+            reasons = []
+
             name = func.get("name", "")
             address = func.get("address", "")
+            name_lower = name.lower()
 
-            # 1. 字符串引用（函数名或地址出现在字符串中）
-            for s in strings:
-                if name in s or address in s:
-                    score += 1
-
-            # 2. 是否是导入函数（库函数通常不太重要）
+            # 1. 库函数降权
             if func.get("is_library", False):
                 score -= 5
+                reasons.append("library/external function: -5")
 
-            # 3. 函数名启发式
-            name_lower = name.lower()
+            # 2. 函数名行为关键词
             for tag, keywords in BEHAVIOR_TAGS.items():
-                for keyword in keywords:
-                    if keyword in name_lower:
-                        score += 3
-                        break
+                matched = [kw for kw in keywords if kw in name_lower]
+                if matched:
+                    score += 3
+                    reasons.append(f"name matches {tag} keyword '{matched[0]}': +3")
+                    break
 
-            # 4. 地址启发式（入口点附近通常更重要）
+            # 3. 字符串关联
+            matched_strings = []
+            for i, s in enumerate(strings[:1000]):
+                if name and name in s:
+                    matched_strings.append(s[:120])
+                elif address and address != "export" and address in s:
+                    matched_strings.append(s[:120])
+
+                if len(matched_strings) >= 3:
+                    break
+
+            if matched_strings:
+                delta = min(len(matched_strings), 3)
+                score += delta
+                reasons.append(f"references {len(matched_strings)} matched strings: +{delta}")
+
+            # 4. 导入 API 语义对齐
+            for tag, keywords in BEHAVIOR_TAGS.items():
+                matched_imports = [
+                    imp for imp in imports_lower
+                    if any(kw in imp for kw in keywords)
+                ]
+                if matched_imports and any(kw in name_lower for kw in keywords):
+                    score += 2
+                    reasons.append(f"function name aligns with imported {tag} APIs: +2")
+                    break
+
+            # 5. 入口附近启发式
             if address and address != "export":
                 try:
-                    addr_int = int(address, 16)
-                    # 入口点附近的函数更重要
+                    addr_int = int(address.replace("0x", ""), 16)
                     if addr_int < 0x10000:
                         score += 2
-                except:
+                        reasons.append("near low address / possible entry region: +2")
+                except ValueError:
                     pass
 
             scored_functions.append({
                 **func,
                 "score": score,
+                "score_reasons": reasons,
             })
 
         # 按分数排序
         scored_functions.sort(key=lambda x: x["score"], reverse=True)
 
-        # 返回前 N 个函数
         return scored_functions[:100]
 
     def _generate_summary(
@@ -166,6 +194,8 @@ class FunctionAnalyzer:
         """为函数生成摘要"""
         name = func.get("name", "unknown")
         address = func.get("address", "")
+        score = func.get("score", 0)
+        reasons = func.get("score_reasons", [])
 
         # 获取反编译代码
         decompiled_code = self._get_decompiled_code(name, address, result)
@@ -181,11 +211,20 @@ class FunctionAnalyzer:
             summary_text = self._heuristic_summary(name, behavior_tags)
             confidence = 0.5
 
+        # 添加评分原因到摘要
+        if reasons:
+            reason_text = "\n".join(f"- {r}" for r in reasons)
+            summary_text = (
+                f"{summary_text}\n\n"
+                f"重要性评分: {score}\n"
+                f"评分原因:\n{reason_text}"
+            )
+
         return FunctionSummary(
             sample_sha256=result.sample.sha256,
             name=name,
             address=address,
-            decompiled_code=decompiled_code[:5000] if decompiled_code else "",  # 限制长度
+            decompiled_code=decompiled_code[:5000] if decompiled_code else "",
             summary=summary_text,
             behavior_tags=behavior_tags,
             confidence=confidence,
@@ -253,11 +292,9 @@ class FunctionAnalyzer:
             messages = [ChatMessage(role="user", content=prompt)]
             response = self.llm.chat(messages, temperature=0.3, max_tokens=500)
 
-            # 解析响应
             content = response.content
             summary = content
 
-            # 提取置信度
             confidence = 0.7
             if "置信度:" in content:
                 try:
@@ -302,7 +339,7 @@ class FunctionAnalyzer:
                     if artifact.type == ArtifactType.STRINGS:
                         try:
                             content = Path(artifact.path).read_text(encoding="utf-8")
-                            strings.extend(content.split("\n")[:1000])  # 限制数量
+                            strings.extend(content.split("\n")[:1000])
                         except:
                             pass
         return strings
