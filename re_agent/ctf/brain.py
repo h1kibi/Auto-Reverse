@@ -42,7 +42,11 @@ SYSTEM_PROMPT = """你是 Auto-Reverse 的 CTF Reverse Agent。
 - 如果 profile_sample 没有 flag_like / encoded_like，但存在 success_strings 或 failure_strings，并且目标是 CTF reverse 求解，可以调用 run_angr_stdout；
 - run_angr_stdout 返回的 candidate 仍然不是最终答案，必须调用 validate_candidate 验证；
 - 优先使用较短 lengths，例如 [8, 12, 16, 24, 32]，如果失败再考虑 [40, 48, 64]；
-- decode_strings、rank_functions、run_angr_stdout 的输出仍然只是证据，不是最终结论。
+- 如果 decompile_function 返回的 excerpt 明确包含逐字节约束、xor/add/sub/shift/and/or 比较，可以整理 constraints JSON 并调用 run_z3；
+- run_z3 返回的 candidate 仍然不是最终答案，必须调用 validate_candidate；
+- 不要凭空发明 constraints，只使用 excerpt 中明确支持的约束；
+- 如果约束不完整，先说明缺少信息，不要伪造 flag；
+- decode_strings、rank_functions、run_angr_stdout、run_z3 的输出仍然只是证据，不是最终结论。
 
 输出最终报告时包含：
 - solved: true/false
@@ -148,7 +152,14 @@ class OpenAIBrain:
             arguments = _parse_tool_arguments(call.arguments)
 
             # 自动补 sample_path
-            if tool_name in {"profile_sample", "validate_candidate"}:
+            sample_path_tools = {
+                "profile_sample",
+                "validate_candidate",
+                "decode_strings",
+                "run_angr_stdout",
+                "run_z3",
+            }
+            if tool_name in sample_path_tools:
                 arguments.setdefault("sample_path", sample_path)
 
             # 补默认值

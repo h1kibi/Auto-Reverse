@@ -145,6 +145,7 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     registry.register(_decode_strings_tool(store))
     registry.register(_rank_functions_tool(store))
     registry.register(_run_angr_stdout_tool(store))
+    registry.register(_run_z3_tool(store))
     return registry
 
 
@@ -1176,3 +1177,189 @@ def _to_needles(values: list[str]) -> list[bytes]:
         if b:
             out.append(b)
     return out
+
+
+# ========== run_z3 工具 ==========
+
+def _run_z3_tool(store: ArtifactStore) -> ToolSpec:
+    def handler(args: JsonDict) -> JsonDict:
+        try:
+            from .solvers.z3_constraints import solve_constraint_spec
+        except Exception as e:
+            return {
+                "summary": f"failed to import Z3 solver: {e}",
+                "data": {"found": False, "reason": "import_error", "error": str(e)},
+                "artifacts": [],
+            }
+
+        try:
+            import z3  # noqa: F401
+        except ImportError:
+            return {
+                "summary": "z3-solver is not installed. Install with: pip install -e '.[ctf]'",
+                "data": {"found": False, "reason": "missing_z3", "install_hint": "pip install -e '.[ctf]'"},
+                "artifacts": [],
+            }
+
+        spec_result = _load_z3_constraints_spec(store, args)
+        if not spec_result["ok"]:
+            return {
+                "summary": spec_result["summary"],
+                "data": {"found": False, "reason": spec_result["reason"], "error": spec_result.get("error")},
+                "artifacts": spec_result.get("artifacts", []),
+            }
+
+        spec = spec_result["spec"]
+
+        validation_error = _validate_z3_spec_shape(spec)
+        if validation_error:
+            artifact = store.write_json("run_z3_result.json", {
+                "found": False, "reason": "invalid_constraints",
+                "error": validation_error, "constraints": spec,
+            })
+            return {
+                "summary": f"invalid Z3 constraints: {validation_error}",
+                "data": {"found": False, "reason": "invalid_constraints", "error": validation_error},
+                "artifacts": [artifact],
+            }
+
+        constraints_artifact = store.write_json("constraints.json", spec)
+
+        try:
+            flag = solve_constraint_spec(spec)
+        except Exception as e:
+            result_artifact = store.write_json("run_z3_result.json", {
+                "found": False, "reason": "solver_error", "error": repr(e),
+                "constraints_artifact": constraints_artifact,
+            })
+            return {
+                "summary": f"run_z3 failed: {e}",
+                "data": {"found": False, "reason": "solver_error", "error": repr(e)},
+                "artifacts": [constraints_artifact, result_artifact],
+            }
+
+        candidates: list[dict[str, Any]] = []
+        if flag:
+            candidates.append({
+                "value": flag,
+                "source": "run_z3",
+                "confidence": 0.86,
+                "evidence": [
+                    "Z3 returned sat for provided constraints",
+                    f"length={spec.get('length')}",
+                    f"prefix={spec.get('prefix', '')!r}",
+                    f"suffix={spec.get('suffix', '')!r}",
+                ],
+            })
+
+        result_artifact = store.write_json("run_z3_result.json", {
+            "found": bool(candidates),
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+            "constraints_artifact": constraints_artifact,
+            "constraint_count": len(spec.get("constraints", [])),
+        })
+
+        return {
+            "summary": f"run_z3 found {len(candidates)} candidate(s)",
+            "data": {
+                "found": bool(candidates),
+                "candidate_count": len(candidates),
+                "candidates": candidates,
+                "next_step": "validate_candidate" if candidates else "decompile_function or revise constraints",
+            },
+            "artifacts": [constraints_artifact, result_artifact],
+        }
+
+    return ToolSpec(
+        name="run_z3",
+        description=(
+            "Solve byte-level CTF flag constraints with Z3. "
+            "Input must be a constraints JSON object or a path to a constraints artifact. "
+            "Candidates must still be verified with validate_candidate."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "sample_path": {"type": "string"},
+                "constraints": {"type": "object", "description": "Inline constraints spec."},
+                "constraints_path": {"type": "string", "description": "Path to constraints JSON file."},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        handler=handler,
+    )
+
+
+def _load_z3_constraints_spec(store: ArtifactStore, args: JsonDict) -> JsonDict:
+    if "constraints" in args and args["constraints"]:
+        spec = args["constraints"]
+        if not isinstance(spec, dict):
+            return {"ok": False, "summary": "constraints must be a JSON object", "reason": "bad_constraints_type"}
+        return {"ok": True, "spec": spec, "summary": "loaded inline constraints", "artifacts": []}
+
+    constraints_path = args.get("constraints_path")
+    if constraints_path:
+        p = Path(str(constraints_path))
+        if not p.is_absolute():
+            p = store.path(str(constraints_path))
+        if not p.exists():
+            return {"ok": False, "summary": f"constraints_path not found: {constraints_path}", "reason": "missing_constraints_path"}
+        try:
+            spec = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception as e:
+            return {"ok": False, "summary": f"failed to read constraints JSON: {e}", "reason": "bad_constraints_json", "error": str(e)}
+        if not isinstance(spec, dict):
+            return {"ok": False, "summary": "constraints JSON must be an object", "reason": "bad_constraints_type"}
+        return {"ok": True, "spec": spec, "summary": f"loaded constraints from {constraints_path}", "artifacts": [str(constraints_path)]}
+
+    default_path = store.path("constraints.json")
+    if default_path.exists():
+        try:
+            spec = json.loads(default_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception as e:
+            return {"ok": False, "summary": f"failed to read default constraints.json: {e}", "reason": "bad_constraints_json", "error": str(e)}
+        return {"ok": True, "spec": spec, "summary": "loaded default constraints.json", "artifacts": ["constraints.json"]}
+
+    return {"ok": False, "summary": "No constraints provided. Pass constraints or constraints_path.", "reason": "missing_constraints"}
+
+
+def _validate_z3_spec_shape(spec: JsonDict) -> str | None:
+    length = spec.get("length")
+    if not isinstance(length, int):
+        return "length must be an integer"
+    if length <= 0 or length > 256:
+        return "length must be between 1 and 256"
+
+    prefix = spec.get("prefix", "")
+    if prefix is not None and not isinstance(prefix, str):
+        return "prefix must be a string"
+
+    suffix = spec.get("suffix", "")
+    if suffix is not None and not isinstance(suffix, str):
+        return "suffix must be a string"
+
+    constraints = spec.get("constraints", [])
+    if not isinstance(constraints, list):
+        return "constraints must be a list"
+
+    for i, constraint in enumerate(constraints):
+        if not isinstance(constraint, dict):
+            return f"constraints[{i}] must be an object"
+        if "left" not in constraint:
+            return f"constraints[{i}] missing left"
+        if "right" not in constraint:
+            return f"constraints[{i}] missing right"
+        op = constraint.get("op", "==")
+        if op not in {"==", "!=", "<", "<=", ">", ">="}:
+            return f"constraints[{i}] has unsupported op: {op}"
+
+    if prefix and len(prefix) > length:
+        return "prefix longer than length"
+    if suffix and len(suffix) > length:
+        return "suffix longer than length"
+    if prefix and suffix and len(prefix) + len(suffix) > length:
+        return "prefix + suffix longer than length"
+
+    return None

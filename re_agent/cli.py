@@ -341,6 +341,7 @@ SAMPLE_PATH_TOOLS = {
     "validate_candidate",
     "decode_strings",
     "run_angr_stdout",
+    "run_z3",
 }
 
 
