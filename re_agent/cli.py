@@ -10,6 +10,7 @@ CLI 入口 - 命令行界面
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path

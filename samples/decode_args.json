@@ -1,0 +1,1 @@
+{"code":"enc = [81,91,86,80,76,86,66,67,88,104,69,82,65,82,69,68,82,104,88,92,74]\nkey = 0x37\nresult = ''.join(chr(b ^ key) for b in enc)\nprint(f'Decoded: {result}')\nprint(f'Flag: {result}')", "timeout":5}
