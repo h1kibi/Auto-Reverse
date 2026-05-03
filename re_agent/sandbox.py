@@ -53,7 +53,67 @@ class DockerSandbox:
         output_dir: str | Path,
         command_template: list[str],
     ) -> DockerSandboxResult:
-        """在 Docker 容器中执行工具"""
+        """在 Docker 容器中执行工具（兼容旧接口）"""
+        return self.run_argv(sample_path, output_dir, command_template)
+
+    def run_argv(
+        self,
+        sample_path: str | Path,
+        output_dir: str | Path,
+        argv: list[str],
+    ) -> DockerSandboxResult:
+        """以 argv 模式执行命令"""
+        rendered = self._render_args(sample_path, output_dir, argv)
+        shell_cmd = " ".join(_shell_quote(x) for x in rendered)
+        return self._execute(sample_path, output_dir, shell_cmd)
+
+    def run_shell(
+        self,
+        sample_path: str | Path,
+        output_dir: str | Path,
+        shell_cmd: str,
+    ) -> DockerSandboxResult:
+        """以 shell 模式执行命令"""
+        rendered_cmd = self._render_shell_args(sample_path, output_dir, shell_cmd)
+        return self._execute(sample_path, output_dir, rendered_cmd)
+
+    def _render_args(
+        self,
+        sample_path: str | Path,
+        output_dir: str | Path,
+        argv: list[str],
+    ) -> list[str]:
+        """渲染 argv 中的 placeholder"""
+        sample = Path(sample_path).resolve()
+        return [
+            arg.replace("{sample}", f"/samples/{sample.name}")
+               .replace("{sample_name}", sample.name)
+               .replace("{out}", "/out")
+            for arg in argv
+        ]
+
+    def _render_shell_args(
+        self,
+        sample_path: str | Path,
+        output_dir: str | Path,
+        shell_cmd: str,
+    ) -> str:
+        """渲染 shell_cmd 中的 placeholder"""
+        sample = Path(sample_path).resolve()
+        return (
+            shell_cmd
+            .replace("{sample}", f"/samples/{sample.name}")
+            .replace("{sample_name}", sample.name)
+            .replace("{out}", "/out")
+        )
+
+    def _execute(
+        self,
+        sample_path: str | Path,
+        output_dir: str | Path,
+        shell_cmd: str,
+    ) -> DockerSandboxResult:
+        """执行 Docker 命令"""
         sample = Path(sample_path).resolve()
         output = Path(output_dir).resolve()
         output.mkdir(parents=True, exist_ok=True)
@@ -70,15 +130,6 @@ class DockerSandbox:
             )
 
         container_name = f"reverse-agent-{uuid.uuid4().hex[:12]}"
-        container_sample = f"/samples/{sample.name}"
-
-        # 渲染命令模板
-        rendered_cmd = [
-            arg.replace("{sample}", container_sample).replace("{out}", "/out")
-            for arg in command_template
-        ]
-
-        shell_cmd = " ".join(_shell_quote(x) for x in rendered_cmd)
 
         # 构建 docker run 命令
         docker_cmd = [
@@ -91,6 +142,7 @@ class DockerSandbox:
             "--pids-limit", str(self.config.pids_limit),
             "--memory", f"{self.config.memory_mb}m",
             "--cpus", str(self.config.cpus),
+            "--user", "65534:65534",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
             "-v", f"{sample.parent}:/samples:ro",
             "-v", f"{output}:/out:rw",
@@ -100,8 +152,10 @@ class DockerSandbox:
         for key, value in self.config.extra_env.items():
             docker_cmd.extend(["-e", f"{key}={value}"])
 
+        # 使用 /bin/sh -lc 执行命令
         docker_cmd.extend([
             self.config.image,
+            "/bin/sh", "-lc",
             shell_cmd,
         ])
 
