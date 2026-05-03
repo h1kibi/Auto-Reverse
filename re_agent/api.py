@@ -109,6 +109,7 @@ async def root():
         "endpoints": [
             "POST /analyze - 分析样本",
             "POST /upload-and-analyze - 上传并分析",
+            "POST /solve - CTF 求解",
             "GET /report/{sha256} - 获取报告",
             "POST /ask - 问答",
             "GET /functions/{sha256} - 获取函数列表",
