@@ -305,6 +305,53 @@ def cmd_solve(args):
     return 0 if result.status == "solved" else 2
 
 
+def cmd_agent_tools(args):
+    """运行本地 CTF Agent 工具"""
+    import json
+    from .ctf.tools import ArtifactStore, ToolExecutor, build_default_ctf_registry
+
+    sample = Path(args.sample).resolve()
+    if not sample.exists():
+        print(f"Error: Sample not found: {sample}")
+        return 1
+
+    output_dir = Path(args.output or "artifacts/agent_test").resolve()
+    store = ArtifactStore(output_dir)
+    registry = build_default_ctf_registry(store)
+    executor = ToolExecutor(registry, store)
+
+    if args.tool == "profile_sample":
+        payload = {
+            "sample_path": str(sample),
+            "skip_ghidra": args.skip_ghidra,
+        }
+    elif args.tool == "validate_candidate":
+        if not args.candidate:
+            print("Error: --candidate is required for validate_candidate")
+            return 1
+        payload = {
+            "sample_path": str(sample),
+            "candidate": args.candidate,
+            "timeout": args.timeout,
+        }
+    elif args.tool == "decompile_function":
+        payload = {
+            "function": args.function,
+            "max_lines": args.max_lines,
+        }
+    else:
+        print(f"Error: unknown tool: {args.tool}")
+        print(f"Available tools: {', '.join(registry.names())}")
+        return 1
+
+    result = executor.execute(args.tool, payload)
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"\nArtifacts: {output_dir}")
+
+    return 0 if result.get("ok") else 2
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -482,6 +529,52 @@ def main():
         help="监听端口",
     )
 
+    # ========== agent-tools 命令 ==========
+    agent_tools_parser = subparsers.add_parser(
+        "agent-tools",
+        help="运行本地 CTF Agent 工具，不调用 OpenAI",
+    )
+    agent_tools_parser.add_argument(
+        "sample",
+        help="挑战文件路径",
+    )
+    agent_tools_parser.add_argument(
+        "--tool",
+        required=True,
+        help="工具名 (profile_sample, validate_candidate, decompile_function)",
+    )
+    agent_tools_parser.add_argument(
+        "-o", "--output",
+        help="输出目录",
+    )
+    agent_tools_parser.add_argument(
+        "--skip-ghidra",
+        action="store_true",
+        default=True,
+        help="跳过 Ghidra 分析",
+    )
+    agent_tools_parser.add_argument(
+        "--candidate",
+        help="validate_candidate 的候选输入",
+    )
+    agent_tools_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=10,
+        help="验证超时（秒）",
+    )
+    agent_tools_parser.add_argument(
+        "--function",
+        default="main",
+        help="decompile_function 的函数名",
+    )
+    agent_tools_parser.add_argument(
+        "--max-lines",
+        type=int,
+        default=80,
+        help="decompile_function 最大行数",
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -496,6 +589,8 @@ def main():
         return cmd_dynamic(args)
     elif args.command == "solve":
         return cmd_solve(args)
+    elif args.command == "agent-tools":
+        return cmd_agent_tools(args)
     elif args.command == "functions":
         return cmd_functions(args)
     elif args.command == "ask":
