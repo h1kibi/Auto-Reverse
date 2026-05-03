@@ -39,7 +39,7 @@ def test_import_llm():
 
 def test_import_sandbox():
     import re_agent.sandbox
-    assert hasattr(re_agent.sandbox, "Sandbox")
+    assert hasattr(re_agent.sandbox, "DockerSandbox")
 
 
 def test_import_dynamic_pipeline():
