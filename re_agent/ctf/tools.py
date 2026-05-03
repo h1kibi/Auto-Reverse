@@ -224,6 +224,7 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     registry.register(_run_z3_tool(store))
     registry.register(_write_artifact_tool(store))
     registry.register(_read_artifact_range_tool(store))
+    registry.register(_list_artifacts_tool(store))
     return registry
 
 
@@ -1630,3 +1631,182 @@ def _read_artifact_range_tool(store: ArtifactStore) -> ToolSpec:
         },
         handler=handler,
     )
+
+
+# ========== list_artifacts 工具 ==========
+
+def _list_artifacts_tool(store: ArtifactStore) -> ToolSpec:
+    def handler(args: JsonDict) -> JsonDict:
+        prefix = str(args.get("prefix", "") or "")
+        max_files = int(args.get("max_files", 100))
+        include_preview = bool(args.get("include_preview", False))
+        preview_lines = int(args.get("preview_lines", 3))
+
+        max_files = max(1, min(max_files, 500))
+        preview_lines = max(1, min(preview_lines, 20))
+
+        try:
+            base = store.safe_path(prefix) if prefix else store.root
+        except Exception as e:
+            return {
+                "summary": f"invalid artifact prefix: {e}",
+                "data": {"found": False, "reason": "invalid_prefix", "error": str(e)},
+                "artifacts": [],
+            }
+
+        if not base.exists():
+            return {
+                "summary": f"artifact prefix not found: {prefix}",
+                "data": {"found": False, "reason": "prefix_not_found", "prefix": prefix},
+                "artifacts": [],
+            }
+
+        files: list[dict[str, Any]] = []
+
+        if base.is_file():
+            candidates = [base]
+        else:
+            candidates = sorted(
+                p for p in base.rglob("*")
+                if p.is_file() and not _is_hidden_artifact_path(p, store.root)
+            )
+
+        for path in candidates[:max_files]:
+            try:
+                rel = str(path.relative_to(store.root))
+            except ValueError:
+                continue
+
+            item: dict[str, Any] = {
+                "path": rel,
+                "size_bytes": path.stat().st_size,
+                "kind": _artifact_kind(path),
+                "suggested_tool": _suggest_artifact_tool(path),
+            }
+
+            if include_preview and _is_text_like_artifact(path):
+                item["preview"] = _preview_artifact(path, preview_lines=preview_lines)
+
+            files.append(item)
+
+        summary = f"listed {len(files)} artifact(s)" if files else "no artifacts found"
+
+        return {
+            "summary": summary,
+            "data": {
+                "found": bool(files),
+                "prefix": prefix,
+                "count": len(files),
+                "truncated": len(candidates) > max_files,
+                "files": files,
+                "next_step": "read_artifact_range for relevant text artifacts",
+            },
+            "artifacts": [x["path"] for x in files[:20]],
+        }
+
+    return ToolSpec(
+        name="list_artifacts",
+        description=(
+            "List files inside the current artifact store. "
+            "Use this to discover profile, solver results, decompile excerpts, "
+            "constraints files, logs, and reports before reading a bounded range."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "prefix": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional relative directory or file prefix inside artifact store.",
+                },
+                "max_files": {
+                    "type": "integer",
+                    "default": 100,
+                    "minimum": 1,
+                    "maximum": 500,
+                },
+                "include_preview": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include short previews for text-like files.",
+                },
+                "preview_lines": {
+                    "type": "integer",
+                    "default": 3,
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        handler=handler,
+    )
+
+
+def _is_hidden_artifact_path(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    return any(part.startswith(".") for part in rel.parts)
+
+
+def _artifact_kind(path: Path) -> str:
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+
+    if name in {"profile.json", "solve_result.json", "validation_result.json"}:
+        return "result_json"
+
+    if name.endswith(".jsonl"):
+        return "trace_jsonl"
+
+    if "constraint" in name and suffix == ".json":
+        return "constraints_json"
+
+    if "decompile" in str(path).lower() or suffix in {".c", ".cpp", ".h"}:
+        return "code_or_decompile"
+
+    if suffix == ".json":
+        return "json"
+
+    if suffix in {".txt", ".md", ".log"}:
+        return "text"
+
+    if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "image"
+
+    return "file"
+
+
+def _suggest_artifact_tool(path: Path) -> str:
+    kind = _artifact_kind(path)
+
+    if kind == "constraints_json":
+        return "run_z3 or read_artifact_range"
+
+    if kind in {"json", "result_json", "trace_jsonl", "text", "code_or_decompile"}:
+        return "read_artifact_range"
+
+    return "none"
+
+
+def _is_text_like_artifact(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+
+    if name.endswith(".jsonl"):
+        return True
+
+    return suffix in {".txt", ".md", ".log", ".json", ".c", ".cpp", ".h", ".py", ".sh"}
+
+
+def _preview_artifact(path: Path, preview_lines: int) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return ""
+
+    text = "\n".join(lines[:preview_lines])
+    return text[:2000]
