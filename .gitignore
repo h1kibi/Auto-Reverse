@@ -9,6 +9,13 @@ build/
 
 # 测试输出
 test_output/
+test_output*/
+
+# 数据库
+*.db
+
+# artifacts
+artifacts/
 
 # IDE
 .vscode/
