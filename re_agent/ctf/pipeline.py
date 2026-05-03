@@ -13,10 +13,12 @@ from .profiler import build_profile
 from .validator import FlagValidator
 from .solvers.base import SolverContext
 from .solvers.static_flag import StaticFlagSolver
+from .solvers.z3_constraints import Z3ConstraintSolver
 
 
 DEFAULT_SOLVERS = [
     StaticFlagSolver(),
+    Z3ConstraintSolver(),
 ]
 
 
