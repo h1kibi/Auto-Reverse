@@ -810,7 +810,7 @@ def cmd_llm_solve(args):
 
     state = {
         "run_id": output_dir.name, "sample_path": str(sample),
-        "output_dir": str(output_dir),
+        "sample_sha256": sha256, "output_dir": str(output_dir),
         "profile": profile_dict, "evidence_brief": evidence_brief.model_dump(),
         "memory_hits": memory_hits, "context_bundles": [],
         "observations": [], "budget_seconds": 300,
