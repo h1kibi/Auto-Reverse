@@ -747,6 +747,22 @@ def cmd_llm_solve(args):
     evidence = EvidenceGraph.from_analysis(analysis)
     evidence_brief = build_evidence_brief(profile)
 
+    # Convert profile to serializable dict
+    profile_dict = {
+        "file_type": getattr(profile, "file_type", ""),
+        "architecture": getattr(profile, "architecture", ""),
+        "tags": getattr(profile, "tags", []),
+        "input_channels": getattr(profile, "input_channels", []),
+        "comparison_hints": getattr(profile, "comparison_hints", []),
+        "encoding_hints": getattr(profile, "encoding_hints", []),
+        "crypto_hints": getattr(profile, "crypto_hints", []),
+        "protections": getattr(profile, "protections", []),
+        "solver_hints": getattr(profile, "solver_hints", []),
+        "success_strings": getattr(profile, "success_strings", []),
+        "failure_strings": getattr(profile, "failure_strings", []),
+        "sha256": getattr(profile, "sha256", ""),
+    }
+
     # Memory
     memory_hits = []
     try:
@@ -754,10 +770,7 @@ def cmd_llm_solve(args):
         from .memory.retriever import MemoryRetriever
         store = MemoryStore("memory.db")
         retriever = MemoryRetriever(store)
-        memory_hits = retriever.retrieve_for_profile({
-            "tags": profile.tags, "comparison_hints": profile.comparison_hints,
-            "encoding_hints": profile.encoding_hints, "crypto_hints": profile.crypto_hints,
-        }, top_k=3)
+        memory_hits = retriever.retrieve_for_profile(profile_dict, top_k=3)
         store.close()
     except Exception:
         pass
@@ -788,7 +801,7 @@ def cmd_llm_solve(args):
     state = {
         "run_id": output_dir.name, "sample_path": str(sample),
         "output_dir": str(output_dir),
-        "profile": profile, "evidence_brief": evidence_brief.model_dump(),
+        "profile": profile_dict, "evidence_brief": evidence_brief.model_dump(),
         "memory_hits": memory_hits, "context_bundles": [],
         "observations": [], "budget_seconds": 300,
     }
