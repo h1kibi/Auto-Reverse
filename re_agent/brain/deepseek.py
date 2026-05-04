@@ -66,12 +66,30 @@ class OpenAICompatibleBrain:
             )
             text = (resp.choices[0].message.content or "").lower()
 
-            # Parse solver name from text
-            solver = "static_flag"
-            for name in ctx.allowed_solvers:
-                if name in text:
-                    solver = name
-                    break
+            # Smart fallback: if MiMo returned empty, use profile hints
+            if not text or len(text) < 5:
+                # Evidence-driven heuristic
+                if evidence.get("comparison_hints"):
+                    solver = "dynamic_trace"
+                elif evidence.get("crypto_hints"):
+                    solver = "z3_extractor"
+                elif evidence.get("encoding_hints"):
+                    solver = "encoding"
+                elif profile.get("protections") and "anti_debug" in str(profile.get("protections")):
+                    solver = "patcher"
+                else:
+                    solver = "static_flag"
+            else:
+                # Smart parser: skip negated, pick last-mentioned positive
+                solver = "static_flag"
+                best_pos = -1
+                for name in ctx.allowed_solvers:
+                    pos = text.rfind(name)
+                    if pos > best_pos:
+                        before = text[max(0, pos - 40):pos]
+                        if not any(w in before for w in ["don't use", "do not", "avoid", "skip", "not"]):
+                            best_pos = pos
+                            solver = name
             return BrainResult(actions=[
                 BrainAction(
                     action_id="step_1", kind="run_solver", name=solver,

@@ -59,6 +59,22 @@ class LLMReverseRuntime:
                     state.setdefault("rejected_actions", []).append(action.model_dump())
                     continue
 
+                # Action Ledger: block repeated failed actions
+                try:
+                    from .action_ledger import was_action_failed
+                    if was_action_failed(state, action):
+                        state.setdefault("observations", []).append(
+                            RuntimeObservation(
+                                tool="policy", status="skipped",
+                                summary=f"Blocked repeat of failed: {getattr(action, 'name', '')}",
+                                structured={"action": action.model_dump()},
+                            ).model_dump()
+                        )
+                        action_count += 1
+                        continue
+                except ImportError:
+                    pass
+
                 obs = self._dispatch_action(state, action)
                 state.setdefault("observations", []).append(obs.model_dump())
 
