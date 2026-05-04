@@ -27,6 +27,18 @@ class RuntimeObservation(BaseModel):
     error: str | None = None
     token_hint: int = 0
 
+    def to_brain_view(self) -> dict:
+        """Compressed view for BrainContext (plan v0.6.8)."""
+        return {
+            "tool": self.tool,
+            "status": self.status,
+            "summary": self.summary,
+            "evidence_ids": self.evidence_ids[:10],
+            "candidate_count": len(self.candidates),
+            "risk": self.risk,
+            "token_hint": self.token_hint,
+        }
+
 
 def normalize_tool_result(tool_name: str, raw: dict) -> RuntimeObservation:
     """Convert existing tool output dict to RuntimeObservation (no rewriting needed)."""
