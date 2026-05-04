@@ -28,8 +28,10 @@ class SolveConfig:
     enable_memory: bool = True
     enable_dynamic: bool = False
     enable_angr: bool = True
+    enable_z3: bool = True
     enable_ghidra: bool = True
     enable_r2: bool = True
+    memory_db_path: str = "memory.db"
 
     # ── time & resource budgets ──
     max_total_seconds: int = 300

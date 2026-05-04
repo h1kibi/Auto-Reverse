@@ -78,7 +78,7 @@ def solve_challenge(
         try:
             from ..memory.store import MemoryStore
             from ..memory.retriever import MemoryRetriever
-            store = MemoryStore("memory.db")
+            store = MemoryStore(config.memory_db_path)
             retriever = MemoryRetriever(store)
             memory_hits = retriever.retrieve_for_profile(_profile_dict(profile), top_k=5)
             store.close()
@@ -164,8 +164,7 @@ def solve_challenge(
 def _solver_enabled(name: str, config: SolveConfig) -> bool:
     if name == "dynamic_trace" and not config.enable_dynamic: return False
     if name == "angr_path" and not config.enable_angr: return False
-    if name in ("z3_constraints", "z3_extractor") and not hasattr(config, 'enable_z3'): return True
-    if name == "patcher" and "anti_debug" not in getattr(config, 'protections', []): return True
+    if name in ("z3_constraints", "z3_extractor") and not config.enable_z3: return False
     return True
 
 
