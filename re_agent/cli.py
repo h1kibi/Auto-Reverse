@@ -257,6 +257,7 @@ def cmd_solve(args):
     """CTF 求解命令"""
     from .artifacts import compute_sha256, sample_artifact_dir
     from .ctf.pipeline import solve_challenge
+    from .ctf.solve_config import SolveConfig
 
     sample = Path(args.sample)
     if not sample.exists():
@@ -291,6 +292,18 @@ def cmd_solve(args):
         validate=not args.no_validate,
         enable_memory=args.enable_memory,
         enable_llm_planner=args.enable_llm_planner,
+        config=SolveConfig(
+            flag_regex=args.flag_regex,
+            skip_ghidra=skip_ghidra,
+            max_total_seconds=args.timeout,
+            verify=not args.no_validate,
+            enable_memory=args.enable_memory,
+            enable_llm_planner=args.enable_llm_planner,
+            enable_dynamic=args.enable_dynamic,
+            redact_candidates_in_logs=args.redact_candidates,
+            memory_db_path=args.memory_db,
+            allowed_input_channels=args.allowed_input_channels.split(","),
+        ),
     )
 
     print(f"\n{'='*60}")
@@ -860,6 +873,27 @@ def main():
         "--enable-llm-planner",
         action="store_true",
         help="启用 LLM 规划器",
+    )
+    solve_parser.add_argument(
+        "--redact",
+        dest="redact_candidates",
+        action="store_true",
+        help="Redact candidates in output",
+    )
+    solve_parser.add_argument(
+        "--memory-db",
+        default="memory.db",
+        help="Memory database path",
+    )
+    solve_parser.add_argument(
+        "--enable-dynamic",
+        action="store_true",
+        help="启用动态追踪 solver",
+    )
+    solve_parser.add_argument(
+        "--allowed-input-channels",
+        default="argv,stdin",
+        help="允许的验证输入通道 (逗号分隔)",
     )
 
     # ========== serve 命令 ==========

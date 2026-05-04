@@ -18,6 +18,7 @@ class SolveRequest(BaseModel):
     skip_ghidra: bool = True
     timeout: int = 120
     verify: bool = Field(True, alias="do_verify")
+    redact: bool = False
     enable_memory: bool = False
     enable_llm_planner: bool = False
 

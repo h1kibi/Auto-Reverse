@@ -89,6 +89,7 @@ def solve_challenge(
     (out / "profile.json").write_text(json.dumps(
         _profile_dict(profile), ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "config_dump.json").write_text(json.dumps({
+        "version": "0.5.3",
         "flag_regex": config.flag_regex, "skip_ghidra": config.skip_ghidra,
         "max_total_seconds": config.max_total_seconds, "max_solver_seconds": config.max_solver_seconds,
         "enable_dynamic": config.enable_dynamic, "enable_angr": config.enable_angr,
@@ -167,7 +168,8 @@ def solve_challenge(
                 if vr.accepted:
                     c["verified"] = True; c["confidence"] = max(c["confidence"], 0.97)
                     c["validation_mode"] = vr.mode
-                    trace.log_verification(step_index, c["value"], True, vr.mode)
+                    trace.log_verification(step_index,
+                        redact_candidate(c["value"], redaction), True, vr.mode)
                     return _finalize(analysis.sample.sha256, c, all_candidates,
                                      solver_runs, trace, out, profile, config, redaction)
 

@@ -237,7 +237,10 @@ class FlagValidator:
 
     def _append_jsonl(self, path: Path, result: ValidationResult):
         data = asdict(result)
-        if result.oracle: data["oracle"] = asdict(result.oracle)
+        if self.redaction != RedactionMode.NONE:
+            data["candidate"] = _redact(result.candidate, self.redaction)
+        if result.oracle:
+            data["oracle"] = asdict(result.oracle)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(data, ensure_ascii=False) + "\n")
 

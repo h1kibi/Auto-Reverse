@@ -7,16 +7,24 @@ from pathlib import Path
 from re_agent.ctf.validator import RedactionMode, redact_candidate
 
 
-def test_r2_decompile_rejects_unsafe_target():
-    """R2Backend.decompile calls validate_r2_target on input"""
-    from re_agent.tools.backend import validate_r2_target
-    assert validate_r2_target("main") == "main"
-    assert validate_r2_target("0x401000") == "0x401000"
-    try:
-        validate_r2_target("rm -rf /")
-        assert False, "Should have raised"
-    except ValueError:
-        pass
+def test_r2_decompile_calls_target_validator(monkeypatch, tmp_path):
+    """R2Backend.decompile() actually calls validate_r2_target"""
+    from re_agent.tools import backend
+
+    called = {"value": False}
+
+    def fake_validate(value):
+        called["value"] = True
+        raise ValueError("blocked")
+
+    monkeypatch.setattr(backend, "validate_r2_target", fake_validate)
+
+    b = backend.R2Backend()
+    b.sample_path = str(tmp_path / "sample")
+    (tmp_path / "sample").write_bytes(b"\x7fELF")
+
+    assert b.decompile("unsafe;cmd") == ""
+    assert called["value"]
 
 
 def test_differential_oracle_requires_all_wrong_inputs_to_differ():

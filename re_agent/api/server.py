@@ -26,6 +26,7 @@ from ..analyzer import FunctionAnalyzer
 from ..qa import QASystem
 from ..llm import LLMFactory
 from ..artifacts import compute_sha256, sample_artifact_dir, sample_upload_path, safe_filename
+from ..ctf.validator import redact_candidate, RedactionMode
 from .schemas import (
     AnalyzeRequest, SolveRequest, AnalyzeResponse, SolveResponse,
     AskRequest, AskResponse, MemorySearchRequest, MemorySearchResponse,
@@ -232,7 +233,7 @@ async def solve_sample(request: SolveRequest):
         return SolveResponse(
             status=result.status,
             sample_sha256=result.sha256,
-            flag=result.best_flag,
+            flag=redact_candidate(result.best_flag or "", RedactionMode.LOGS) if request.redact else result.best_flag,
             method=result.method,
             solved=result.verified,
             candidates_count=len(result.candidates),

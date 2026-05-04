@@ -101,6 +101,7 @@ class DynamicTraceSolver(BaseSolver):
                         value=extracted,
                         source=f"dynamic_trace:ltrace:{evt.function}",
                         confidence=0.95,
+                        input_channel=evt.input_channel,
                         evidence=[
                             f"ltrace captured {evt.function} via {channel}",
                             f"raw={evt.raw_line[:240]}",
