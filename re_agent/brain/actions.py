@@ -31,6 +31,7 @@ RiskLevel = Literal[
 
 class BrainAction(BaseModel):
     id: str | None = None
+    action_id: str | None = None
     kind: ActionKind
     name: str | None = None
     params: dict = Field(default_factory=dict)
@@ -38,6 +39,8 @@ class BrainAction(BaseModel):
     expected_observation: str | None = None
     risk: RiskLevel = "read_only"
     requires_validation: bool = True
+    memory_refs: list[str] = Field(default_factory=list)
+    created_from: str = "brain"  # "brain" | "memory" | "policy"
 
 
 class BrainResult(BaseModel):

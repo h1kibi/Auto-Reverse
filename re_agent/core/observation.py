@@ -9,6 +9,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Literal, Any
 
+from ..brain.context_builder import approx_tokens
+
 
 class RuntimeObservation(BaseModel):
     tool: str
@@ -23,6 +25,7 @@ class RuntimeObservation(BaseModel):
     risk: Literal["read_only", "executes_sample", "mutates_binary"] = "read_only"
     elapsed_ms: int | None = None
     error: str | None = None
+    token_hint: int = 0
 
 
 def normalize_tool_result(tool_name: str, raw: dict) -> RuntimeObservation:
@@ -47,4 +50,5 @@ def normalize_tool_result(tool_name: str, raw: dict) -> RuntimeObservation:
         risk=raw.get("risk", "read_only"),
         elapsed_ms=raw.get("elapsed_ms"),
         error=raw.get("error"),
+        token_hint=raw.get("token_hint", approx_tokens(raw.get("summary", ""))),
     )

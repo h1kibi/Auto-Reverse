@@ -9,6 +9,19 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class MemoryTacticCard(BaseModel):
+    """Compressed memory card - NOT full playbook text."""
+    id: str
+    title: str = ""
+    source_type: str = "user"
+    priority: int = 50
+    why_relevant: str = ""
+    signals: list[str] = Field(default_factory=list)
+    recommended_strategy: list[str] = Field(default_factory=list)
+    tool_sequence: list[dict] = Field(default_factory=list)
+    pitfalls: list[str] = Field(default_factory=list)
+
+
 class BrainContext(BaseModel):
     run_id: str = ""
     goal: str = "solve CTF reverse challenge"
