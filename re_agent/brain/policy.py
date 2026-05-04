@@ -34,8 +34,10 @@ class PolicyGate:
         name = getattr(action, "name", "")
         if name == "unpack_upx" and not self.policy.allow_unpack:
             return False
-        # Packed binary: block static solvers
+        # Packed binary: block static solvers unless unpacked
         if state and state.get("packer_profile", {}).get("is_packed"):
-            if self.policy.block_static_when_packed and name in {"static_flag", "encoding"}:
-                return False
+            unpacked = bool(state.get("unpacked_path"))
+            if self.policy.block_static_when_packed and not unpacked:
+                if name in {"static_flag", "encoding"}:
+                    return False
         return True
