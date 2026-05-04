@@ -202,34 +202,39 @@ class EvidenceGraph:
         return consts[:20]
 
     def to_snapshot(self) -> dict:
-        """Export deterministic snapshot (kernagent-style). 
-        Same binary + same tools -> same snapshot."""
-        import json
-        from datetime import datetime
+        """Deterministic snapshot: same binary + same tools -> same output."""
         return {
-            "run_id": self.run_id,
-            "created_at": datetime.now().isoformat(),
-            "functions": [
+            "schema_version": "evidence-snapshot-v1",
+            "sample_sha256": self.run_id,
+            "functions": sorted([
                 {"id": f.id, "address": f.address, "name": f.name,
-                 "size": f.size, "tags": f.tags, "calls": f.calls,
-                 "xrefs_from": f.xrefs_from, "xrefs_to": f.xrefs_to}
+                 "size": f.size, "tags": sorted(f.tags),
+                 "calls": sorted(f.calls),
+                 "xrefs_from": sorted(f.xrefs_from),
+                 "xrefs_to": sorted(f.xrefs_to)}
                 for f in self.functions
-            ],
-            "strings": [
-                {"id": s.id, "value": s.value, "address": s.address,
-                 "tags": s.tags, "xrefs": s.xrefs}
+            ], key=lambda x: x["address"]),
+            "strings": sorted([
+                {"id": s.id, "value": s.value, "address": s.address or 0,
+                 "tags": sorted(s.tags), "xrefs": sorted(s.xrefs)}
                 for s in self.strings
-            ],
-            "imports": [
-                {"name": i.name, "library": i.library, "tags": i.tags}
+            ], key=lambda x: (x["address"], x["value"])),
+            "imports": sorted([
+                {"name": i.name, "library": i.library, "tags": sorted(i.tags)}
                 for i in self.imports
-            ],
-            "dynamic_events": [
-                {"id": e.id, "kind": e.kind, "function": e.function,
-                 "args": e.args, "result": e.result}
+            ], key=lambda x: x["name"]),
+            "dynamic_events": sorted([
+                {"id": e.id, "kind": e.kind, "function": e.function or "",
+                 "args": e.args, "result": e.result or ""}
                 for e in self.dynamic_events
-            ],
+            ], key=lambda x: x["id"]),
         }
+
+    def snapshot_id(self) -> str:
+        import json
+        import hashlib
+        data = json.dumps(self.to_snapshot(), sort_keys=True, ensure_ascii=False).encode()
+        return hashlib.sha256(data).hexdigest()
 
     def save_snapshot(self, path: Path) -> None:
         import json

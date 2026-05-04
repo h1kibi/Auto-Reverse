@@ -11,7 +11,7 @@ from .models import (
 )
 from .pipeline import solve_challenge
 from .profiler import build_profile
-from .validator import FlagValidator, OutputOracle, ValidationResult, OracleResult
+from .validator import FlagValidator, OutputOracle, ValidationResult, OracleResult, RedactionMode, redact_candidate
 from .strategy import (
     DeterministicPlanner, LLMPlanner, PlanMerger,
     StrategyPlan, PlanStep,
@@ -28,6 +28,7 @@ __all__ = [
     "SolveResult", "EvidenceRef",
     "solve_challenge", "build_profile",
     "FlagValidator", "OutputOracle", "ValidationResult", "OracleResult",
+    "RedactionMode", "redact_candidate",
     "DeterministicPlanner", "LLMPlanner", "PlanMerger",
     "StrategyPlan", "PlanStep",
     "llm_propose_constraints", "repair_constraints_with_llm",

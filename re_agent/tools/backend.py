@@ -15,6 +15,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+import json
+import re
+import subprocess
 
 
 @dataclass
@@ -362,6 +365,17 @@ ALLOWED_R2_ACTIONS: set[str] = {
     "emulate_basic_block",
 }
 
+R2_COMMANDS: dict[str, str] = {
+    "list_functions": "aaa;aflj",
+    "list_strings": "izzj",
+    "list_imports": "iij",
+    "list_sections": "iSj",
+    "entry_points": "iej",
+    "arch_bits": "e asm.arch;e asm.bits",
+}
+
+R2_TARGET_RE = re.compile(r"^(?:0x[0-9a-fA-F]+|[A-Za-z_.$][A-Za-z0-9_.$@-]{0,127})$")
+
 
 def get_backend(config: BackendConfig, sample_path: str, output_dir: str) -> BaseBackend:
     """Factory: select the best available backend"""
@@ -383,3 +397,25 @@ def get_backend(config: BackendConfig, sample_path: str, output_dir: str) -> Bas
         backend.output_dir = output_dir
 
     return backends[0] if backends else QuickBackend()
+
+
+def validate_r2_target(value: str) -> str:
+    """Validate that an R2 target is a safe function name or hex address."""
+    if re.fullmatch(r"0x[0-9a-fA-F]+", value):
+        return value
+    if re.fullmatch(r"[A-Za-z_.$][A-Za-z0-9_.$@-]{0,127}", value):
+        return value
+    raise ValueError(f"unsafe r2 target: {value!r}")
+
+R2_COMMANDS = {
+    "list_functions": "aaa;aflj",
+    "list_strings": "izzj",
+    "list_imports": "iij",
+    "list_sections": "iSj",
+    "entry_points": "iej",
+    "arch_bits": "e asm.arch;e asm.bits",
+}
+
+R2_TARGET_RE = re.compile(
+    r"^(?:0x[0-9a-fA-F]+|[A-Za-z_.$][A-Za-z0-9_.$@-]{0,127})$"
+)

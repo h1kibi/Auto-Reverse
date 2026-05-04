@@ -1,11 +1,8 @@
 """
-Dynamic Trace Solver (v2)
+Dynamic Trace Solver v3
 
-Structured probe-based ltrace extraction:
-- Sends known probes (AAAA…, flag{…}, 000…)
-- Hooks strcmp/memcmp/strncmp/strlen
-- Extracts the "other side" (the expected value)
-- Returns high-confidence candidates
+Sandbox-only execution. No host fallback unless explicitly enabled.
+Frida: spawn via -f with script injection and probe passing.
 """
 
 from pathlib import Path
@@ -80,9 +77,9 @@ class DynamicTraceSolver(BaseSolver):
                 continue
 
             if tool == "ltrace":
-                lines = self._run_ltrace(sample, probe_text, timeout)
+                lines = self._run_ltrace_sandbox(sample, probe_text, timeout)
             else:
-                lines = self._run_frida(sample, probe_text, timeout)
+                lines = self._run_frida_sandbox(ctx, sample, probe_text, timeout)
 
             for line in lines:
                 extracted = self._extract_arg(line, probe_text)
@@ -100,14 +97,8 @@ class DynamicTraceSolver(BaseSolver):
 
         return candidates
 
-    def _run_ltrace(self, sample: Path, probe: str, timeout: int) -> list[str]:
-        """Run ltrace INSIDE Docker sandbox (never on host)"""
-        try:
-            import subprocess
-        except ImportError:
-            return []
-
-        # Try sandbox first
+    def _run_ltrace_sandbox(self, sample: Path, probe: str, timeout: int) -> list[str]:
+        """Run ltrace INSIDE Docker sandbox only."""
         try:
             from ...sandbox import DockerSandbox, DockerSandboxConfig
             config = DockerSandboxConfig(timeout=timeout)
@@ -118,25 +109,15 @@ class DynamicTraceSolver(BaseSolver):
                            "/input/sample", probe],
                 output_dir=sample.parent,
             )
-            if result and result.stdout:
+            if result:
                 return (result.stderr + "\n" + result.stdout).split("\n")
-        except (FileNotFoundError, Exception):
+        except Exception:
             pass
+        return []
 
-        # Fallback: direct (will fail on Windows/non-Docker env)
-        try:
-            proc = subprocess.run(
-                ["ltrace", "-e", "+" + "+".join(COMPARISON_FUNCTIONS),
-                 str(sample), probe],
-                capture_output=True, text=True, timeout=timeout,
-            )
-            return (proc.stderr + "\n" + proc.stdout).split("\n")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return []
-
-    def _run_frida(self, sample: Path, probe: str, timeout: int) -> list[str]:
-        """Run Frida INSIDE Docker sandbox (never on host)"""
-        script = r"""
+    def _run_frida_sandbox(self, ctx: SolverContext, sample: Path, probe: str, timeout: int) -> list[str]:
+        """Run Frida inside Docker sandbox: spawn -f + inject script + pass probe."""
+        script_content = r'''
 const funcs=["strcmp","strncmp","memcmp"];
 for(const n of funcs){
   const a=Module.findExportByName(null,n);
@@ -145,110 +126,98 @@ for(const n of funcs){
     onEnter(args){this.a=args[0];this.b=args[1]},
     onLeave(ret){
       try{send(JSON.stringify({
-        f:n, a:Memory.readCString(this.a), b:Memory.readCString(this.b), r:ret.toInt32()
+        f:n, a:Memory.readCString(this.a),
+        b:Memory.readCString(this.b), r:ret.toInt32()
       }));}catch(e){}
     }
   });
 }
-"""
-        # Sandbox attempt
+'''
+        out_dir = ctx.output_dir
+        script_path = out_dir / "frida_hook.js"
+        script_path.write_text(script_content, encoding="utf-8")
+
         try:
             from ...sandbox import DockerSandbox, DockerSandboxConfig
             config = DockerSandboxConfig(timeout=timeout)
             sandbox = DockerSandbox(config)
             result = sandbox.run_tool_with_sample(
                 sample_path=sample,
-                tool_argv=["frida", "-q", "-n", sample.name],
-                output_dir=sample.parent,
+                tool_argv=[
+                    "frida", "-q",
+                    "-f", "/input/sample",
+                    "-l", "/out/frida_hook.js",
+                    "--", probe,
+                ],
+                output_dir=out_dir,
             )
-            if result and result.stdout:
-                return result.stdout.split("\n")
+            if result:
+                return (result.stdout + "\n" + result.stderr).split("\n")
         except Exception:
             pass
-
-        # Direct fallback
-        import subprocess
-        try:
-            proc = subprocess.run(
-                ["frida", "-q", "-n", sample.name],
-                input=script.encode() + b"\n",
-                capture_output=True, text=True, timeout=timeout,
-            )
-            return (proc.stdout or "").split("\n")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return []
+        return []
 
     def _extract_arg(self, line: str, probe: str) -> str | None:
-        """Extract the non-probe argument from a comparison call line"""
         if not line or "(" not in line:
             return None
 
-        # JSON-style Frida output
         if line.strip().startswith("{"):
             import json
             try:
                 data = json.loads(line.strip())
-                for key in ("a", "b"):
+                for key in ("a", "b", "message"):
                     val = data.get(key, "")
-                    if isinstance(val, str) and val and val != probe and len(val) >= 4:
-                        if self._is_interesting(val):
-                            return val
+                    if isinstance(val, str) and val:
+                        try:
+                            inner = json.loads(val)
+                            for k2 in ("a", "b"):
+                                v2 = inner.get(k2, "")
+                                if v2 and v2 != probe and len(v2) >= 4:
+                                    if self._printable_ratio(v2) > 0.6:
+                                        return v2
+                        except (json.JSONDecodeError, TypeError):
+                            if val and val != probe and len(val) >= 4:
+                                if self._printable_ratio(val) > 0.6:
+                                    return val
             except json.JSONDecodeError:
                 pass
 
-        # Text-style ltrace output
         for func in COMPARISON_FUNCTIONS:
             if func not in line:
                 continue
             try:
                 paren = line.index("(")
                 args_raw = line[paren + 1:]
-                depth = 0
-                end = 0
+                depth, end = 0, 0
                 for i, ch in enumerate(args_raw):
                     if ch == "(": depth += 1
                     elif ch == ")":
-                        if depth == 0:
-                            end = i; break
+                        if depth == 0: end = i; break
                         depth -= 1
                 args_part = args_raw[:end]
-
-                # Extract quoted arguments
-                parts = []
-                in_q = False
-                cur = ""
+                parts, in_q, cur = [], False, ""
                 for ch in args_part:
-                    if ch == '"' or ch == "'":
-                        if in_q:
-                            parts.append(cur); cur = ""
-                        in_q = not in_q
-                        continue
-                    if in_q:
-                        cur += ch
-                        continue
-                if cur:
-                    parts.append(cur)
-
+                    if ch in ('"', "'"):
+                        if in_q: parts.append(cur); cur = ""
+                        in_q = not in_q; continue
+                    if in_q: cur += ch; continue
+                if cur: parts.append(cur)
                 for arg in parts:
                     arg = arg.strip().strip('"')
                     if arg and arg != probe and len(arg) >= 4:
-                        pr = self._printable_ratio(arg)
-                        if pr > 0.6 and self._is_interesting(arg):
+                        if self._printable_ratio(arg) > 0.6 and self._is_interesting(arg):
                             return arg
             except Exception:
                 continue
-
         return None
 
     @staticmethod
     def _printable_ratio(s: str) -> float:
-        if not s:
-            return 0.0
+        if not s: return 0.0
         cnt = sum(32 <= ord(c) <= 126 or c in "\n\r\t" for c in s)
         return cnt / len(s)
 
     @staticmethod
     def _is_interesting(s: str) -> bool:
         low = s.lower()
-        return any(k in low for k in ("flag", "ctf", "{", "}",
-                                        "correct", "wrong", "key", "pass"))
+        return any(k in low for k in ("flag", "ctf", "{", "}", "correct", "wrong", "key", "pass"))

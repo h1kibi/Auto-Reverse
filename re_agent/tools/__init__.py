@@ -15,7 +15,8 @@ from .pefile_tool import PEFileTool, HAS_PEFILE
 from .backend import (
     ReverseBackend, BaseBackend, BackendAnalysis,
     QuickBackend, GhidraBackend, R2Backend, ObjdumpBackend, FakeBackend,
-    BackendConfig, get_backend, ALLOWED_R2_ACTIONS,
+    BackendConfig, get_backend, ALLOWED_R2_ACTIONS, R2_COMMANDS,
+    validate_r2_target, R2_TARGET_RE,
     BackendFunction, BackendString, BackendImport,
 )
 
@@ -25,6 +26,7 @@ __all__ = [
     "PEFileTool", "HAS_PEFILE",
     "ReverseBackend", "BaseBackend", "BackendAnalysis",
     "QuickBackend", "GhidraBackend", "R2Backend", "ObjdumpBackend", "FakeBackend",
-    "BackendConfig", "get_backend", "ALLOWED_R2_ACTIONS",
+    "BackendConfig", "get_backend", "ALLOWED_R2_ACTIONS", "R2_COMMANDS",
+    "validate_r2_target", "R2_TARGET_RE",
     "BackendFunction", "BackendString", "BackendImport",
 ]
