@@ -29,7 +29,7 @@ class LLMReverseRuntime:
         self.policy = policy or RuntimePolicy()
 
     def run(self, state: dict) -> dict:
-        """Simple loop: context -> plan -> execute -> validate. Max 5 steps."""
+        """Core loop: context -> plan -> execute -> AUTO-VALIDATE. Max N steps."""
         for step_idx in range(self.max_steps):
             ctx = self._build_context(state, step_idx)
 
@@ -57,12 +57,28 @@ class LLMReverseRuntime:
                 state.setdefault("observations", []).append(obs.model_dump())
                 action_count += 1
 
-                # Check for verified candidate
-                for cand in obs.candidates:
-                    if cand.get("verified") or cand.get("accepted"):
-                        state["solved"] = True
-                        state["winning_candidate"] = cand
-                        return state
+                # AUTO-VALIDATE: every candidate must go through validator
+                if action.requires_validation and obs.candidates:
+                    for cand in obs.candidates:
+                        vr_obs = self._validate_candidate(
+                            state,
+                            {"candidate": cand.get("value"),
+                             "source": cand.get("source", action.name or "")},
+                        )
+                        state.setdefault("observations", []).append(vr_obs.model_dump())
+
+                        for vc in vr_obs.candidates:
+                            if vc.get("accepted"):
+                                state["solved"] = True
+                                state["winning_candidate"] = vc
+                                return state
+                else:
+                    # Only accept pre-verified if requires_validation=False
+                    for cand in obs.candidates:
+                        if cand.get("verified") or cand.get("accepted"):
+                            state["solved"] = True
+                            state["winning_candidate"] = cand
+                            return state
 
         return state
 

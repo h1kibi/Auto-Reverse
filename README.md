@@ -5,7 +5,7 @@
 Auto-Reverse gives LLMs reverse-engineering tools, compact evidence, memory playbooks, sandbox validation, and reproducible traces. It turns model reasoning into verified, reproducible, and learnable reverse workflows.
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-49%20passed-green)]()
+[![Tests](https://img.shields.io/badge/tests-58%20passed-green)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.6.0-blue)]()
 
