@@ -86,11 +86,37 @@ class LLMReverseRuntime:
             return self._run_tool(state, tool_name, params)
         elif action.kind == "propose_candidate":
             return self._validate_candidate(state, params)
+        elif action.kind == "request_context":
+            return self._handle_request_context(state, params)
         else:
             return normalize_tool_result("unknown", {
                 "summary": f"Unsupported action kind: {action.kind}",
                 "status": "skipped",
             })
+
+    def _handle_request_context(self, state: dict, params: dict) -> "RuntimeObservation":
+        """Progressive Disclosure: LLM requests more context, system provides it."""
+        from ..core.observation import RuntimeObservation
+        function = params.get("function") or params.get("target", "")
+        if not function:
+            return RuntimeObservation(tool="request_context", status="skipped",
+                summary="No function/target specified for context request")
+
+        # Build context bundle on demand
+        from .context_bundle import build_context_bundle
+        profile = state.get("profile")
+        out_dir = Path(state.get("output_dir", "artifacts"))
+        bundle = build_context_bundle(function, profile, None, out_dir)
+
+        state.setdefault("context_bundles", []).append(bundle.model_dump())
+
+        return RuntimeObservation(
+            tool="request_context",
+            status="ok",
+            summary=f"Context bundle for {function}",
+            structured=bundle.model_dump(),
+            evidence_ids=getattr(bundle, "evidence_ids", []),
+        )
 
     def _run_solver(self, state: dict, name: str, params: dict) -> "RuntimeObservation":
         from ..core.observation import RuntimeObservation

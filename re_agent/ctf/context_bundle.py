@@ -66,41 +66,35 @@ def build_evidence_brief(profile) -> EvidenceBrief:
 def build_context_bundle(function: str, profile, evidence, artifact_root: Path,
                          max_excerpt_chars: int = 6000) -> FunctionContextBundle:
     """Build a FunctionContextBundle from existing profiling/evidence data."""
-
-    # Find decompile excerpt from artifacts
     decomp = _find_decompile_excerpt(artifact_root, function, max_excerpt_chars)
+    ref_strs, imports, constants, recommended = [], [], [], []
 
-    # Referenced strings
-    ref_strs = []
-    for s in (profile.success_strings + profile.failure_strings):
-        if s and s in decomp:
-            ref_strs.append(s)
-    for s in getattr(profile, "strings", [])[:50]:
-        if s and s in decomp:
-            ref_strs.append(s)
-            if len(ref_strs) >= 10:
-                break
+    if profile is not None:
+        for s in (getattr(profile, "success_strings", []) +
+                  getattr(profile, "failure_strings", [])):
+            if s and s in decomp:
+                ref_strs.append(s)
+        for s in getattr(profile, "strings", [])[:50]:
+            if s and s in decomp:
+                ref_strs.append(s)
+                if len(ref_strs) >= 10:
+                    break
+        for imp in getattr(profile, "imports", []):
+            if imp and imp.lower() in decomp.lower():
+                imports.append(imp)
+                if len(imports) >= 10:
+                    break
 
-    # Imports used
-    imports = []
-    for imp in getattr(profile, "imports", []):
-        if imp and imp.lower() in decomp.lower():
-            imports.append(imp)
-            if len(imports) >= 10:
-                break
-
-    # Constants
     import re
     constants = list(set(re.findall(r"0x[0-9a-fA-F]{2,8}", decomp)))[:20]
 
-    # Recommended next steps
-    recommended = []
-    if any(x in [i.lower() for i in imports] for x in ["strcmp", "strncmp", "memcmp"]):
-        recommended.append("dynamic_trace")
-    if any(op in decomp for op in ["^", "+", "-", "!=", "==", "strlen"]):
-        recommended.append("z3_extractor")
-    if profile.success_strings or profile.failure_strings:
-        recommended.append("angr_path")
+    if profile is not None:
+        if any(x in [i.lower() for i in imports] for x in ["strcmp", "strncmp", "memcmp"]):
+            recommended.append("dynamic_trace")
+        if any(op in decomp for op in ["^", "+", "-", "!=", "==", "strlen"]):
+            recommended.append("z3_extractor")
+        if getattr(profile, "success_strings", []) or getattr(profile, "failure_strings", []):
+            recommended.append("angr_path")
 
     return FunctionContextBundle(
         function=function,

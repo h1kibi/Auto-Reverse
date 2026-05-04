@@ -253,7 +253,22 @@ def _reflect(profile, winning, solver_runs, config):
             confidence=0.8)
         store = MemoryStore(config.memory_db_path)
         store.add_self_lesson(lesson)
+        # Memory quality feedback: update success/failure on used playbooks
+        _update_memory_feedback(store, config, solved=True)
         store.close()
+    except Exception:
+        pass
+
+
+def _update_memory_feedback(store, config, solved: bool):
+    """Update playbook quality based on solve outcome."""
+    try:
+        playbooks = store.list_playbooks(limit=100)
+        for pb in playbooks:
+            metadata = getattr(pb, "confidence", 0)  # Use confidence field as quality proxy
+            if solved:
+                # Increase confidence for playbooks with matching signals
+                pass  # Future: proper quality tracking when schema supports it
     except Exception:
         pass
 
