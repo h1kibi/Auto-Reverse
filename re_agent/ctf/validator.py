@@ -76,28 +76,38 @@ class OutputOracle:
 
     def evaluate_differential(
         self, candidate_stdout: str, candidate_stderr: str,
-        wrong_stdout: str, wrong_stderr: str,
-        exit_code: int | None,
+        wrong_runs: list, exit_code: int | None,
     ) -> OracleResult:
         r = self._evaluate(candidate_stdout, candidate_stderr, exit_code)
 
         cand_text = (candidate_stdout + "\n" + candidate_stderr).strip()
-        wrong_text = (wrong_stdout + "\n" + wrong_stderr).strip()
+        wrong_texts = [(wr.stdout + "\n" + wr.stderr).strip() for wr in wrong_runs]
 
-        if cand_text and cand_text != wrong_text:
-            r.confidence = min(1.0, r.confidence + 0.30)
-            r.reasons.append("output_differs_from_wrong_input")
+        if cand_text:
+            diff_count = sum(cand_text != wt for wt in wrong_texts)
+            if diff_count == len(wrong_texts):
+                r.confidence = min(1.0, r.confidence + 0.35)
+                r.reasons.append("output_differs_from_all_wrong_inputs")
+            elif diff_count > 0:
+                r.confidence = min(1.0, r.confidence + 0.10)
+                r.reasons.append("output_differs_from_some_wrong_inputs")
 
-        if len(candidate_stdout.strip()) > len(wrong_stdout.strip()) + 5:
-            r.confidence = min(1.0, r.confidence + 0.15)
+        if len(candidate_stdout.strip()) > max((len(wt) for wt in wrong_texts), default=0) + 5:
+            r.confidence = min(1.0, r.confidence + 0.10)
             r.reasons.append("candidate_output_longer_than_wrong")
 
-        if exit_code == 0:
+        if exit_code == 0 and not any(wr.exit_code == 0 for wr in wrong_runs):
             r.confidence = min(1.0, r.confidence + 0.10)
+            r.reasons.append("candidate_exit_zero_but_wrongs_not")
 
-        # Allow acceptance even without explicit success pattern if output differs
-        if "failure_pattern_matched" not in r.reasons and r.confidence >= 0.50:
-            r.accepted = True
+        if "success_pattern_matched" in r.reasons:
+            r.accepted = "failure_pattern_matched" not in r.reasons and r.confidence >= 0.70
+        else:
+            r.accepted = (
+                "failure_pattern_matched" not in r.reasons
+                and "output_differs_from_all_wrong_inputs" in r.reasons
+                and r.confidence >= 0.75
+            )
         return r
 
     def _evaluate(self, stdout: str, stderr: str, exit_code: int | None,
@@ -134,6 +144,11 @@ class FlagValidator:
         self.oracle = OutputOracle(success_patterns, failure_patterns)
         self.redaction = redaction
 
+    @staticmethod
+    def _build_wrong_inputs(candidate: str) -> list[str]:
+        n = min(max(len(candidate), 8), 64)
+        return ["A" * n, "0" * n, "wrong{" + "A" * max(0, n - 7)]
+
     def validate(self, sample_path: Path, candidate: str,
                  output_dir: Path | None = None,
                  modes: list[str] | None = None) -> ValidationResult:
@@ -143,16 +158,21 @@ class FlagValidator:
         modes = modes or ["argv", "stdin"]
         sandbox = DockerSandbox(DockerSandboxConfig(timeout=self.timeout))
 
-        # Run wrong baseline first
-        wrong_len = min(max(len(candidate), 8), 64)
-        wrong_str = "A" * wrong_len
-        wrong_run = sandbox.run_exec(sample_path=sample_path, argv=[wrong_str],
-                                     output_dir=output_dir)
+        # Multi wrong baseline
+        wrong_runs = []
+        for w in self._build_wrong_inputs(candidate):
+            try:
+                wr = sandbox.run_exec(sample_path=sample_path, argv=[w], output_dir=output_dir)
+                wrong_runs.append(wr)
+            except Exception:
+                pass
+        if not wrong_runs:
+            wrong_runs = [DockerSandboxResult(success=False, exit_code=-1, stdout="", stderr="",
+                                              execution_time_ms=0, command=[], error="no wrong baseline")]
 
         results: list[ValidationResult] = []
         for mode in modes:
-            result = self._run_one_mode(sandbox, sample_path, output_dir,
-                                        candidate, mode, wrong_run)
+            result = self._run_one_mode(sandbox, sample_path, output_dir, candidate, mode, wrong_runs)
             results.append(result)
             self._append_jsonl(output_dir / "validation_results.jsonl", result)
             if result.accepted:
@@ -160,12 +180,11 @@ class FlagValidator:
                 return result
 
         best = self._pick_best(results)
-        self._write_output(output_dir, best, sample_path, candidate,
-                           best.mode if best.mode else "unknown")
+        self._write_output(output_dir, best, sample_path, candidate, best.mode if best.mode else "unknown")
         return best
 
     def _run_one_mode(self, sandbox, sample_path, output_dir, candidate, mode,
-                      wrong_run) -> ValidationResult:
+                      wrong_runs) -> ValidationResult:
         if mode == "argv":
             command = f"/input/sample {candidate}"
             result = sandbox.run_exec(sample_path=sample_path, argv=[candidate],
@@ -183,8 +202,7 @@ class FlagValidator:
 
         oracle = self.oracle.evaluate_differential(
             candidate_stdout=stdout, candidate_stderr=stderr,
-            wrong_stdout=wrong_run.stdout or "",
-            wrong_stderr=wrong_run.stderr or "",
+            wrong_runs=wrong_runs,
             exit_code=result.exit_code,
         )
 

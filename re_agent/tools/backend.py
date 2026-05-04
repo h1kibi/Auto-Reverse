@@ -290,12 +290,12 @@ class R2Backend(BaseBackend):
         return result
 
     def decompile(self, function: str) -> str:
-        import subprocess
         try:
             sample = Path(self.sample_path)
+            target = validate_r2_target(str(function))
             proc = subprocess.run(
-                ["r2", "-q", "-c", f"aaa;pdf @ {function}", str(sample)],
-                capture_output=True, text=True, timeout=30,
+                ["r2", "-q", "-c", f"aaa;pdf @ {target}", str(sample)],
+                capture_output=True, text=True, timeout=30, check=False,
             )
             return proc.stdout[:5000]
         except Exception:

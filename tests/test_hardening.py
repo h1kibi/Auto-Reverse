@@ -24,8 +24,8 @@ def test_dynamic_trace_no_host_fallback():
     """DynamicTraceSolver has no direct subprocess fallback on host"""
     from re_agent.ctf.solvers.dynamic_trace import DynamicTraceSolver
     import inspect
-    src = inspect.getsource(DynamicTraceSolver._run_ltrace_sandbox)
-    assert "subprocess.run" not in src  # sandbox-only, no direct host subprocess
+    src = inspect.getsource(DynamicTraceSolver._run_ltrace_channel)
+    assert "subprocess.run" not in src
 
 
 def test_solve_config_disables_dynamic_solver():
@@ -81,15 +81,21 @@ def test_snapshot_is_deterministic():
 
 
 def test_validator_differential_can_accept_without_success_string():
-    """Differential oracle can accept when output differs from wrong input"""
+    """Differential oracle can accept when output differs from ALL wrong inputs"""
     from re_agent.ctf.validator import OutputOracle
+    from re_agent.sandbox import DockerSandboxResult
 
     oracle = OutputOracle()
+    wrong_runs = [
+        DockerSandboxResult(success=False, exit_code=1, stdout="Wrong!\n", stderr="",
+                            execution_time_ms=0, command=[]),
+        DockerSandboxResult(success=False, exit_code=1, stdout="Nope.\n", stderr="",
+                            execution_time_ms=0, command=[]),
+    ]
     r = oracle.evaluate_differential(
         candidate_stdout="Data: ABC123\n", candidate_stderr="",
-        wrong_stdout="Wrong!\n", wrong_stderr="",
-        exit_code=0,
+        wrong_runs=wrong_runs, exit_code=0,
     )
     assert r.accepted
-    assert "output_differs_from_wrong_input" in r.reasons
+    assert "output_differs_from_all_wrong_inputs" in r.reasons
     assert r.confidence > 0.3

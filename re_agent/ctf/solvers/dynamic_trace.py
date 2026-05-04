@@ -1,11 +1,12 @@
 """
-Dynamic Trace Solver v3
+Dynamic Trace Solver (v0.5.2)
 
-Sandbox-only execution. No host fallback unless explicitly enabled.
-Frida: spawn via -f with script injection and probe passing.
+Sandbox-only. Supports argv/stdin probe channels.
+Uses ctx.output_dir (not sample.parent). CompareEvent-ready.
 """
 
 from pathlib import Path
+from dataclasses import dataclass
 
 from .base import BaseSolver, SolverContext
 from ..models import FlagCandidate
@@ -26,6 +27,20 @@ PROBE_INPUTS: list[bytes] = [
 ]
 
 
+@dataclass
+class CompareEvent:
+    source: str
+    function: str
+    input_channel: str
+    probe: str
+    arg0_preview: str = ""
+    arg1_preview: str = ""
+    n: int | None = None
+    return_value: int | None = None
+    raw_line: str = ""
+    evidence_artifact: str | None = None
+
+
 class DynamicTraceSolver(BaseSolver):
     name = "dynamic_trace"
 
@@ -34,154 +49,121 @@ class DynamicTraceSolver(BaseSolver):
         if not profile:
             return 0.0
         score = 0.0
-        if profile.comparison_hints:
-            score += 0.40
-        if profile.has_success_string or profile.has_failure_string:
-            score += 0.30
-        if profile.input_channels:
-            score += 0.10
+        if profile.comparison_hints: score += 0.40
+        if profile.has_success_string or profile.has_failure_string: score += 0.30
+        if profile.input_channels: score += 0.10
         if profile.protections:
-            if "anti_debug" in profile.protections:
-                score -= 0.20
-            if "packed_upx" in profile.protections:
-                score -= 0.15
+            if "anti_debug" in profile.protections: score -= 0.20
+            if "packed_upx" in profile.protections: score -= 0.15
         return min(max(score, 0.0), 1.0)
 
     def solve(self, ctx: SolverContext) -> list[FlagCandidate]:
         candidates: list[FlagCandidate] = []
+        channels = ctx.profile.input_channels if ctx.profile.input_channels else ["argv"]
 
-        for mode in ("ltrace", "frida"):
-            try:
-                result = self._trace(ctx, mode)
-                candidates.extend(result)
-            except Exception:
+        for channel in channels:
+            if channel not in ("argv", "stdin"):
                 continue
+            for tool in ("ltrace",):
+                try:
+                    result = self._trace_channel(ctx, tool, channel)
+                    candidates.extend(result)
+                except Exception:
+                    continue
+                if len(candidates) >= 3:
+                    break
             if len(candidates) >= 3:
                 break
 
         return candidates
 
-    def _trace(self, ctx: SolverContext, tool: str) -> list[FlagCandidate]:
+    def _trace_channel(self, ctx: SolverContext, tool: str, channel: str) -> list[FlagCandidate]:
         sample = ctx.profile.sample_path.resolve()
         if not sample.exists():
             return []
-
         timeout = min(ctx.timeout or 10, 10)
         candidates: list[FlagCandidate] = []
         seen: set[str] = set()
 
-        for probe_bytes in PROBE_INPUTS:
+        for probe_bytes in PROBE_INPUTS[:4]:
             try:
                 probe_text = probe_bytes.decode("utf-8", errors="replace")
             except Exception:
                 continue
 
-            if tool == "ltrace":
-                lines = self._run_ltrace_sandbox(sample, probe_text, timeout)
-            else:
-                lines = self._run_frida_sandbox(ctx, sample, probe_text, timeout)
+            events = self._run_ltrace_channel(ctx, sample, probe_text, channel, timeout)
 
-            for line in lines:
-                extracted = self._extract_arg(line, probe_text)
+            for evt in events:
+                extracted = self._candidate_from_event(evt)
                 if extracted and extracted not in seen and 4 <= len(extracted) <= 256:
                     seen.add(extracted)
                     candidates.append(FlagCandidate(
                         value=extracted,
-                        source=f"dynamic_trace:{tool}",
+                        source=f"dynamic_trace:ltrace:{evt.function}",
                         confidence=0.95,
                         evidence=[
-                            f"{tool} captured comparison argument",
-                            f"raw: {line[:240]}",
+                            f"ltrace captured {evt.function} via {channel}",
+                            f"raw={evt.raw_line[:240]}",
                         ],
                     ))
 
         return candidates
 
-    def _run_ltrace_sandbox(self, sample: Path, probe: str, timeout: int) -> list[str]:
-        """Run ltrace INSIDE Docker sandbox only."""
+    def _run_ltrace_channel(self, ctx, sample, probe, channel, timeout):
         try:
             from ...sandbox import DockerSandbox, DockerSandboxConfig
             config = DockerSandboxConfig(timeout=timeout)
             sandbox = DockerSandbox(config)
+        except Exception:
+            return []
+
+        if channel == "argv":
             result = sandbox.run_tool_with_sample(
                 sample_path=sample,
                 tool_argv=["ltrace", "-e", "+strcmp+strncmp+memcmp+strlen",
                            "/input/sample", probe],
-                output_dir=sample.parent,
+                output_dir=ctx.output_dir,
             )
-            if result:
-                return (result.stderr + "\n" + result.stdout).split("\n")
-        except Exception:
-            pass
-        return []
-
-    def _run_frida_sandbox(self, ctx: SolverContext, sample: Path, probe: str, timeout: int) -> list[str]:
-        """Run Frida inside Docker sandbox: spawn -f + inject script + pass probe."""
-        script_content = r'''
-const funcs=["strcmp","strncmp","memcmp"];
-for(const n of funcs){
-  const a=Module.findExportByName(null,n);
-  if(!a)continue;
-  Interceptor.attach(a,{
-    onEnter(args){this.a=args[0];this.b=args[1]},
-    onLeave(ret){
-      try{send(JSON.stringify({
-        f:n, a:Memory.readCString(this.a),
-        b:Memory.readCString(this.b), r:ret.toInt32()
-      }));}catch(e){}
-    }
-  });
-}
-'''
-        out_dir = ctx.output_dir
-        script_path = out_dir / "frida_hook.js"
-        script_path.write_text(script_content, encoding="utf-8")
-
-        try:
-            from ...sandbox import DockerSandbox, DockerSandboxConfig
-            config = DockerSandboxConfig(timeout=timeout)
-            sandbox = DockerSandbox(config)
+        elif channel == "stdin":
             result = sandbox.run_tool_with_sample(
                 sample_path=sample,
-                tool_argv=[
-                    "frida", "-q",
-                    "-f", "/input/sample",
-                    "-l", "/out/frida_hook.js",
-                    "--", probe,
-                ],
-                output_dir=out_dir,
+                tool_argv=["ltrace", "-e", "+strcmp+strncmp+memcmp+strlen",
+                           "/input/sample"],
+                stdin=(probe + "\n").encode(),
+                output_dir=ctx.output_dir,
             )
-            if result:
-                return (result.stdout + "\n" + result.stderr).split("\n")
-        except Exception:
-            pass
-        return []
+        else:
+            return []
 
-    def _extract_arg(self, line: str, probe: str) -> str | None:
-        if not line or "(" not in line:
+        if not result:
+            return []
+        return _parse_compare_events(
+            (result.stderr + "\n" + result.stdout).split("\n"),
+            probe=probe, channel=channel,
+        )
+
+    @staticmethod
+    def _candidate_from_event(evt: CompareEvent) -> str | None:
+        sides = [evt.arg0_preview, evt.arg1_preview]
+        if evt.probe not in sides:
             return None
+        other = sides[1] if sides[0] == evt.probe else sides[0]
+        if not other or len(other) < 4:
+            return None
+        pr = sum(32 <= ord(c) <= 126 or c in "\n\r\t" for c in other) / max(len(other), 1)
+        if pr < 0.6:
+            return None
+        low = other.lower()
+        if any(k in low for k in ("flag", "ctf", "{", "}", "correct", "wrong", "key", "pass")):
+            return other
+        return other
 
-        if line.strip().startswith("{"):
-            import json
-            try:
-                data = json.loads(line.strip())
-                for key in ("a", "b", "message"):
-                    val = data.get(key, "")
-                    if isinstance(val, str) and val:
-                        try:
-                            inner = json.loads(val)
-                            for k2 in ("a", "b"):
-                                v2 = inner.get(k2, "")
-                                if v2 and v2 != probe and len(v2) >= 4:
-                                    if self._printable_ratio(v2) > 0.6:
-                                        return v2
-                        except (json.JSONDecodeError, TypeError):
-                            if val and val != probe and len(val) >= 4:
-                                if self._printable_ratio(val) > 0.6:
-                                    return val
-            except json.JSONDecodeError:
-                pass
 
+def _parse_compare_events(lines, probe, channel):
+    events = []
+    for line in lines:
+        if not line or "(" not in line:
+            continue
         for func in COMPARISON_FUNCTIONS:
             if func not in line:
                 continue
@@ -202,22 +184,15 @@ for(const n of funcs){
                         in_q = not in_q; continue
                     if in_q: cur += ch; continue
                 if cur: parts.append(cur)
-                for arg in parts:
-                    arg = arg.strip().strip('"')
-                    if arg and arg != probe and len(arg) >= 4:
-                        if self._printable_ratio(arg) > 0.6 and self._is_interesting(arg):
-                            return arg
+                args = [p.strip().strip('"') for p in parts if p.strip()]
+                while len(args) < 2: args.append("")
+                events.append(CompareEvent(
+                    source="ltrace", function=func, input_channel=channel,
+                    probe=probe, arg0_preview=args[0] if len(args) > 0 else "",
+                    arg1_preview=args[1] if len(args) > 1 else "",
+                    raw_line=line[:240],
+                ))
+                break
             except Exception:
                 continue
-        return None
-
-    @staticmethod
-    def _printable_ratio(s: str) -> float:
-        if not s: return 0.0
-        cnt = sum(32 <= ord(c) <= 126 or c in "\n\r\t" for c in s)
-        return cnt / len(s)
-
-    @staticmethod
-    def _is_interesting(s: str) -> bool:
-        low = s.lower()
-        return any(k in low for k in ("flag", "ctf", "{", "}", "correct", "wrong", "key", "pass"))
+    return events
