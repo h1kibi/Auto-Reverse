@@ -1,12 +1,13 @@
 # Auto-Reverse
 
-**Evidence-driven CTF Reverse Autopilot.**
+**LLM-native reverse engineering runtime.**
 
-Auto-Reverse combines static triage, decompilation, dynamic tracing, symbolic execution, constraint solving, decoding, sandbox validation, and memory-guided planning to produce reproducible solve traces.
+Auto-Reverse gives LLMs reverse-engineering tools, compact evidence, memory playbooks, sandbox validation, and reproducible traces. It turns model reasoning into verified, reproducible, and learnable reverse workflows.
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/tests-31%20passed-green)]()
+[![Tests](https://img.shields.io/badge/tests-49%20passed-green)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue)]()
 
 ---
 
@@ -81,6 +82,8 @@ python -m re_agent solve ./challenge --flag-regex 'flag\{[^}]+\}'
 | `memory search` | Search memory for relevant tactics |
 | `memory stats` | Memory store statistics |
 | `memory reflect` | Generate SelfLesson from solve trace |
+| `memory add-playbook` | Import Markdown experience as Playbook |
+| `llm-solve` | LLM Brain-driven experimental solve (DeepSeek/GPT) |
 | `serve` | Start FastAPI web API |
 
 ### API Server
@@ -207,7 +210,51 @@ tests/
 |----------|-------------|
 | `MIMO_API_KEY` | Xiaomi MiMo API key (for LLM functions) |
 | `OPENAI_API_KEY` | OpenAI API key (for LLM functions) |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (for LLM Brain) |
+| `DEEPSEEK_BASE_URL` | DeepSeek API base URL |
 | `GHIDRA_HOME` | Ghidra installation path |
+
+## LLM Brain Runtime
+
+Auto-Reverse provides an LLM-native reverse engineering runtime that gives models structured tools, evidence, and memory — without burning tokens on raw artifacts.
+
+```bash
+# LLM Brain experimental solve (DeepSeek)
+python -m re_agent llm-solve ./challenge --brain deepseek --max-steps 5
+
+# With dynamic tools enabled
+python -m re_agent llm-solve ./challenge --brain deepseek --allow-dynamic
+
+# Import your refined reverse experience
+python -m re_agent memory add-playbook ./my_tactics.md --db memory.db
+```
+
+### Brain Architecture
+
+```
+LLM (DeepSeek/GPT/Claude)
+  ↓ returns BrainAction JSON
+BrainContextBuilder         ← token-budgeted evidence assembly
+  ↓ Profile(300t) + Memory(800t) + Bundles(1500t) + Observations(700t)
+PolicyGate                  ← risk-based tool gating
+  ↓
+Tool Runtime                ← existing solvers + sandbox validator
+  ↓ produces RuntimeObservation
+Validator Gate              ← only validator declares "solved"
+```
+
+### Three-Mode Benchmark
+
+```bash
+# Compare: LLM-only vs Auto-Reverse (no brain) vs Auto-Reverse + Brain
+re-agent benchmark tests/challenges --modes llm-only,auto-no-brain,auto-brain --brain deepseek
+```
+
+| Mode | Description | Tokens |
+|------|-------------|--------|
+| `llm-only` | LLM receives evidence brief, outputs candidate directly | ~20K-40K |
+| `auto-no-brain` | Existing solver pipeline (zero LLM tokens) | 0 |
+| `auto-brain` | LLM plans + tools execute + validator verifies | ~10K-15K |
 
 ## Design Principles
 
