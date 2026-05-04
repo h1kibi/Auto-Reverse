@@ -1,9 +1,8 @@
 """
-E-language detection tool.
-
-Detects: 易语言 (E-language) runtime hints, 加密数据, 字节集, etc.
+E-language tools: detect, extract bytearray, decode candidates, find refs.
 """
 
+import struct
 from pathlib import Path
 from ..core.observation import RuntimeObservation
 
@@ -12,19 +11,16 @@ def tool_detect_e_language(args: dict) -> dict:
     strings = args.get("strings", [])
     imports = args.get("imports", [])
     sample_path = args.get("sample_path")
-
     hints = []
     joined = "\n".join(strings[:1000]) if strings else ""
     for token in ["易语言", "字节集", "到字节集", "到文本", "取文本长度",
                    "加密数据", "解压数据", "标准输入", "标准输出"]:
         if token in joined:
             hints.append(token)
-
     import_joined = "\n".join(imports).lower() if imports else ""
     for token in ["krnln", "eapi", "elib"]:
         if token in import_joined:
             hints.append(f"import:{token}")
-
     if sample_path:
         try:
             data = Path(sample_path).read_bytes()[:2_000_000]
@@ -35,7 +31,6 @@ def tool_detect_e_language(args: dict) -> dict:
                         hints.append(f"{enc}:{token}")
         except Exception:
             pass
-
     is_e = bool(hints)
     return RuntimeObservation(
         tool="detect_e_language", status="ok",
@@ -51,7 +46,7 @@ def tool_extract_e_bytearray(args: dict) -> dict:
     if not address:
         return RuntimeObservation(
             tool="extract_e_bytearray", status="skipped",
-            summary="No E-language bytearray address provided.", risk="read_only",
+            summary="No address provided.", risk="read_only",
         ).model_dump()
     try:
         import pefile
@@ -67,7 +62,6 @@ def tool_extract_e_bytearray(args: dict) -> dict:
         rva2 = data_va - image_base
         off2 = pe.get_offset_from_rva(rva2)
         data = pe.__data__[off2: off2 + length]
-
         return RuntimeObservation(
             tool="extract_e_bytearray", status="ok",
             summary=f"Extracted E-language bytearray length={length} at {hex(struct_va)}.",
@@ -112,5 +106,39 @@ def tool_decode_e_bytearray_candidates(args: dict) -> dict:
         summary=f"Decoded {len(candidates)} candidate views.",
         structured={"candidates": candidates[:50]},
         candidates=candidates[:10],
+        risk="read_only", token_hint=180,
+    ).model_dump()
+
+
+def tool_find_e_bytearray_refs(args: dict) -> dict:
+    sample_path = Path(args.get("sample_path", ""))
+    max_refs = int(args.get("max_refs", 20))
+    if not sample_path.exists():
+        return RuntimeObservation(
+            tool="find_e_bytearray_refs", status="error",
+            summary="Sample not found.", risk="read_only",
+        ).model_dump()
+    data = sample_path.read_bytes()
+    refs = []
+    for off in range(0, min(len(data) - 12, 2_000_000), 4):
+        unknown, length, ptr = struct.unpack_from("<III", data, off)
+        if not (1 <= length <= 4096):
+            continue
+        conf = 0.2
+        if 0 <= ptr < len(data):
+            blob = data[ptr:ptr + min(length, 128)]
+            pr = sum(32 <= b <= 126 for b in blob) / max(len(blob), 1)
+            if pr > 0.5:
+                conf += 0.3
+        if conf >= 0.4:
+            refs.append({"raw_offset": off, "length": length, "data_ptr": hex(ptr),
+                          "confidence": round(conf, 2)})
+            if len(refs) >= max_refs:
+                break
+    refs.sort(key=lambda x: x["confidence"], reverse=True)
+    return RuntimeObservation(
+        tool="find_e_bytearray_refs", status="ok",
+        summary=f"Found {len(refs)} possible E-language bytearray refs.",
+        structured={"refs": refs, "next_tool": "extract_e_bytearray" if refs else "decompile_function"},
         risk="read_only", token_hint=180,
     ).model_dump()

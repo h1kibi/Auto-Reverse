@@ -269,7 +269,7 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     ))
 
     # v0.7.0: E-language detection + bytearray extraction
-    from .tools_elang import tool_detect_e_language, tool_extract_e_bytearray
+    from .tools_elang import tool_detect_e_language, tool_extract_e_bytearray, tool_find_e_bytearray_refs
     registry.register(ToolSpec(
         name="detect_e_language", description="Detect E-language / 易语言 runtime hints.",
         input_schema={"type": "object", "properties": {
@@ -286,6 +286,14 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
             "sample_path": {"type": "string"}, "address": {"type": "string"}},
             "required": ["sample_path", "address"], "additionalProperties": False},
         handler=tool_extract_e_bytearray, risk="read_only",
+    ))
+    registry.register(ToolSpec(
+        name="find_e_bytearray_refs",
+        description="Find possible E-language bytearray struct references in PE.",
+        input_schema={"type": "object", "properties": {
+            "sample_path": {"type": "string"}, "max_refs": {"type": "integer", "default": 20}},
+            "required": ["sample_path"], "additionalProperties": False},
+        handler=tool_find_e_bytearray_refs, risk="read_only",
     ))
     return registry
 

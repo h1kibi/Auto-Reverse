@@ -43,7 +43,9 @@ STATE_ALLOWED_TOOLS = {
     BrainState.PROFILED: {"detect_packer", "detect_e_language", "decode_strings",
                            "rank_functions", "decompile_function", "read_artifact_range"},
     BrainState.EVIDENCE_READY: {"decode_strings", "crypto_recipe", "extract_e_bytearray",
-                                 "decompile_function", "rank_functions", "extract_arrays_from_decompile"},
+                                  "decode_e_bytearray_candidates", "find_e_bytearray_refs",
+                                  "decompile_function", "rank_functions", "extract_arrays_from_decompile",
+                                  "run_python_snippet_sandbox", "run_z3"},
     BrainState.CANDIDATE_FOUND: {"validate_candidate"},
     BrainState.UNSOLVED: {"profile_sample", "detect_packer", "rank_functions"},
 }
