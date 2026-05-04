@@ -18,18 +18,16 @@ class Z3ConstraintSolver(BaseSolver):
     name = "z3_constraints"
 
     def score(self, ctx: SolverContext) -> float:
-        """有 constraints.json 就值得尝试"""
         constraints_path = ctx.output_dir / "constraints.json"
         return 0.9 if constraints_path.exists() else 0.0
 
     def solve(self, ctx: SolverContext) -> list[FlagCandidate]:
-        """求解约束"""
         path = ctx.output_dir / "constraints.json"
         if not path.exists():
             return []
 
         try:
-            import z3
+            import z3  # noqa: F401
         except ImportError:
             return []
 
@@ -102,21 +100,50 @@ def solve_constraint_spec(spec: dict[str, Any]) -> str | None:
 
 
 def _expr(node: Any, xs: list):
-    """解析表达式节点"""
+    """解析表达式节点，兼容三种格式:
+
+    1. legacy string: "x[0]"
+    2. extractor dict: {"var": 0}, {"const": 42}
+    3. op dict (args): {"op": "xor", "args": [{"var": 0}, 18]}
+    4. op dict (left/right): {"op": "xor", "left": {"var": 0}, "right": 18}
+    """
+    from z3 import LShR
+
     if isinstance(node, int):
         return node
 
     if isinstance(node, str):
-        if node.startswith("x[") and node.endswith("]"):
-            idx = int(node[2:-1])
-            return xs[idx]
+        import re
+        # legacy: "x[0]"
+        m = re.fullmatch(r"x\[(\d+)\]", node)
+        if m:
+            return xs[int(m.group(1))]
         if node.startswith("0x"):
             return int(node, 16)
         return int(node)
 
     if isinstance(node, dict):
-        op = node["op"]
-        args = [_expr(a, xs) for a in node["args"]]
+        # {"var": 0}  (from z3_extractor)
+        if "var" in node:
+            return xs[int(node["var"])]
+
+        # {"const": 42}
+        if "const" in node:
+            return int(node["const"])
+
+        op = node.get("op")
+        if not op:
+            raise ValueError(f"expression dict missing op/var/const: {node}")
+
+        # args style: {"op":"xor","args":[{"var":0},18]}
+        if "args" in node:
+            args = [_expr(a, xs) for a in node["args"]]
+        # left/right style: {"op":"xor","left":{"var":0},"right":18}
+        else:
+            args = [
+                _expr(node["left"], xs),
+                _expr(node["right"], xs),
+            ]
 
         if op == "add":
             return args[0] + args[1]
@@ -133,6 +160,8 @@ def _expr(node: Any, xs: list):
         if op == "shl":
             return args[0] << args[1]
         if op == "shr":
-            return args[0] >> args[1]
+            return LShR(args[0], args[1])
 
-    raise ValueError(f"bad expr node: {node!r}")
+        raise ValueError(f"unsupported op: {op}")
+
+    raise TypeError(f"unsupported expression node: {node!r}")

@@ -20,16 +20,11 @@ from typing import Any, Callable
 from ..pipeline import run_analysis
 from .profiler import build_profile
 from .validator import FlagValidator
+from ..core.toolspec import ToolSpec, ToolCall, ToolObservation, ToolRisk
+from ..core.policy import ExecutionPolicy, check_policy
+from ..core.evidence_v2 import redact_tool_args
 
 JsonDict = dict[str, Any]
-
-
-@dataclass
-class ToolSpec:
-    name: str
-    description: str
-    input_schema: JsonDict
-    handler: Callable[[JsonDict], JsonDict]
 
 
 class ArtifactStore:

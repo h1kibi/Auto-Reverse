@@ -1,28 +1,24 @@
 """
 Docker 沙箱 - 安全执行动态分析
 
-安全规则：
-- --network none (默认)
-- --read-only
-- --cap-drop ALL
-- --security-opt no-new-privileges
-- --pids-limit, --memory, --cpus
-- 只挂载单个样本文件
-- 避免 shell 拼接
+安全规则 (no-shell execution):
+- 单文件 mount: 只 mount sample 文件, 不 mount parent dir
+- argv 用 list 传入, 不用 shell 拼接
+- stdin 用 subprocess bytes 传入
+- 绝不使用 /bin/sh -lc 执行样本
+- --network none / --read-only / --cap-drop ALL
 """
 
 import shutil
 import subprocess
 import tempfile
 import time
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
 @dataclass
 class DockerSandboxConfig:
-    """Docker 沙箱配置"""
     image: str = "reverse-agent-sandbox:latest"
     timeout: int = 60
     memory_mb: int = 256
@@ -35,7 +31,6 @@ class DockerSandboxConfig:
 
 @dataclass
 class DockerSandboxResult:
-    """Docker 沙箱执行结果"""
     success: bool
     exit_code: int
     stdout: str
@@ -45,20 +40,107 @@ class DockerSandboxResult:
     error: str | None = None
 
 
+def _copy_single_sample(sample_path: Path, tmpdir: Path) -> Path:
+    safe_sample = tmpdir / "sample"
+    shutil.copy2(sample_path, safe_sample)
+    safe_sample.chmod(0o755)
+    return safe_sample
+
+
 class DockerSandbox:
-    """Docker 沙箱执行器 - 单文件安全隔离"""
+    """Docker 沙箱执行器 - 单文件安全隔离, 无 shell 执行"""
 
     def __init__(self, config: DockerSandboxConfig | None = None):
         self.config = config or DockerSandboxConfig()
 
-    def run_tool(
+    def run_exec(
         self,
         sample_path: str | Path,
-        output_dir: str | Path,
-        command_template: list[str],
+        argv: list[str] | None = None,
+        stdin: bytes | None = None,
+        timeout: int | None = None,
+        output_dir: Path | None = None,
     ) -> DockerSandboxResult:
-        """在 Docker 容器中执行工具（兼容旧接口）"""
-        return self.run_argv(sample_path, output_dir, command_template)
+        """安全执行: 只接受 argv list + stdin bytes, 没有 shell"""
+        sample = Path(sample_path).resolve()
+        output = (output_dir or Path.cwd() / "sandbox_out").resolve()
+        output.mkdir(parents=True, exist_ok=True)
+        argv = (argv or []).copy()
+        timeout = timeout or self.config.timeout
+
+        if not sample.exists():
+            return DockerSandboxResult(
+                success=False, exit_code=-1, stdout="", stderr=f"Sample not found: {sample}",
+                execution_time_ms=0, command=[], error="Sample not found",
+            )
+
+        with tempfile.TemporaryDirectory(prefix="auto_reverse_sandbox_") as td:
+            tmpdir = Path(td)
+            safe_sample = _copy_single_sample(sample, tmpdir)
+
+            rendered = []
+            for arg in argv:
+                rendered.append(
+                    arg.replace("{sample}", "/input/sample")
+                       .replace("{sample_name}", sample.name)
+                       .replace("{out}", "/out")
+                )
+
+            cmd = [
+                "docker", "run", "--rm",
+                "--network", "bridge" if self.config.enable_network else "none",
+                "--read-only",
+                "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--pids-limit", str(self.config.pids_limit),
+                "--memory", f"{self.config.memory_mb}m",
+                "--cpus", str(self.config.cpus),
+                "--user", "65534:65534",
+                "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+                "--mount", f"type=bind,src={safe_sample},dst=/input/sample,readonly",
+                "--mount", f"type=bind,src={output},dst=/out",
+                "--workdir", "/tmp",
+                self.config.image,
+                "/input/sample",
+                *rendered,
+            ]
+
+            for key, value in self.config.extra_env.items():
+                cmd.insert(-len(rendered) - 1, "-e")
+                cmd.insert(-len(rendered) - 1, f"{key}={value}")
+
+            start = time.time()
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=stdin,
+                    capture_output=self.config.capture_output,
+                    text=True,
+                    timeout=timeout + 10,
+                    check=False,
+                )
+                return DockerSandboxResult(
+                    success=proc.returncode == 0,
+                    exit_code=proc.returncode,
+                    stdout=proc.stdout or "",
+                    stderr=proc.stderr or "",
+                    execution_time_ms=int((time.time() - start) * 1000),
+                    command=cmd,
+                )
+            except subprocess.TimeoutExpired as e:
+                return DockerSandboxResult(
+                    success=False, exit_code=-1,
+                    stdout=e.stdout or "", stderr=e.stderr or "",
+                    execution_time_ms=int((time.time() - start) * 1000),
+                    command=cmd, error="timeout",
+                )
+            except FileNotFoundError:
+                return DockerSandboxResult(
+                    success=False, exit_code=-1,
+                    stdout="", stderr="docker not found. Please install Docker.",
+                    execution_time_ms=int((time.time() - start) * 1000),
+                    command=cmd, error="docker not found",
+                )
 
     def run_argv(
         self,
@@ -66,40 +148,51 @@ class DockerSandbox:
         output_dir: str | Path,
         argv: list[str],
     ) -> DockerSandboxResult:
-        """以 argv 模式执行命令（不用 shell）"""
-        sample = Path(sample_path).resolve()
-        out_dir = Path(output_dir).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
+        """argv 模式 - 使用 run_exec"""
+        return self.run_exec(
+            sample_path=sample_path,
+            argv=argv,
+            output_dir=Path(output_dir),
+        )
 
-        if not sample.exists():
-            return DockerSandboxResult(
-                success=False, exit_code=-1, stdout="", stderr=f"Sample not found: {sample}",
-                execution_time_ms=0, command=[], error="Sample not found",
-            )
-
-        with tempfile.TemporaryDirectory(prefix="auto_reverse_sandbox_") as tmp_dir:
-            tmp = Path(tmp_dir)
-            safe_sample = tmp / "sample"
-            shutil.copy2(sample, safe_sample)
-            safe_sample.chmod(0o755)
-
-            resolved_args = []
-            for arg in argv:
-                rendered = arg.replace("{sample}", "/input/sample").replace("{sample_name}", sample.name).replace("{out}", "/out")
-                resolved_args.append(rendered)
-
-            return self._execute_container(safe_sample, out_dir, resolved_args, stdin_bytes=None)
-
-    def run_shell(
+    def run_stdin(
         self,
         sample_path: str | Path,
         output_dir: str | Path,
-        shell_cmd: str,
+        stdin_content: str,
     ) -> DockerSandboxResult:
-        """以 stdin 模式执行命令（安全构造，避免 shell）"""
+        """stdin 模式 - 使用 run_exec"""
+        return self.run_exec(
+            sample_path=sample_path,
+            argv=[],
+            stdin=(stdin_content + "\n").encode(),
+            output_dir=Path(output_dir),
+        )
+
+    def run_tool(
+        self,
+        sample_path: str | Path,
+        output_dir: str | Path,
+        command_template: list[str],
+    ) -> DockerSandboxResult:
+        """兼容旧接口"""
+        return self.run_exec(
+            sample_path=sample_path,
+            argv=command_template,
+            output_dir=Path(output_dir),
+        )
+
+    def run_tool_with_sample(
+        self,
+        sample_path: str | Path,
+        tool_argv: list[str],
+        stdin: bytes | None = None,
+        output_dir: Path | None = None,
+    ) -> DockerSandboxResult:
+        """在容器内执行工具 + 样本: 把 tool_argv 作为容器命令运行"""
         sample = Path(sample_path).resolve()
-        out_dir = Path(output_dir).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
+        output = (output_dir or Path.cwd() / "sandbox_out").resolve()
+        output.mkdir(parents=True, exist_ok=True)
 
         if not sample.exists():
             return DockerSandboxResult(
@@ -107,18 +200,19 @@ class DockerSandbox:
                 execution_time_ms=0, command=[], error="Sample not found",
             )
 
-        with tempfile.TemporaryDirectory(prefix="auto_reverse_sandbox_") as tmp_dir:
-            tmp = Path(tmp_dir)
-            safe_sample = tmp / "sample"
-            shutil.copy2(sample, safe_sample)
-            safe_sample.chmod(0o755)
+        with tempfile.TemporaryDirectory(prefix="auto_reverse_sandbox_") as td:
+            tmpdir = Path(td)
+            safe_sample = _copy_single_sample(sample, tmpdir)
 
-            rendered_cmd = shell_cmd.replace("{sample}", "/input/sample").replace("{sample_name}", sample.name).replace("{out}", "/out")
+            rendered = []
+            for arg in tool_argv:
+                rendered.append(
+                    arg.replace("/input/sample", "/input/sample")
+                       .replace("{sample}", "/input/sample")
+                       .replace("{out}", "/out")
+                )
 
-            stdout_path = tmp / "stdout.txt"
-            stderr_path = tmp / "stderr.txt"
-
-            container_cmd = [
+            cmd = [
                 "docker", "run", "--rm",
                 "--network", "none",
                 "--read-only",
@@ -130,138 +224,40 @@ class DockerSandbox:
                 "--user", "65534:65534",
                 "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
                 "--mount", f"type=bind,src={safe_sample},dst=/input/sample,readonly",
-                "--mount", f"type=bind,src={out_dir},dst=/out",
-                "--mount", f"type=bind,src={tmp},dst=/sandbox_tmp",
-            ]
-
-            for key, value in self.config.extra_env.items():
-                container_cmd.extend(["-e", f"{key}={value}"])
-
-            container_cmd.extend([
+                "--mount", f"type=bind,src={output},dst=/out",
+                "--workdir", "/tmp",
                 self.config.image,
-                "/bin/sh", "-c",
-                f"fmted_cmd={_safe_quote(rendered_cmd)} && "
-                f"$fmted_cmd > /sandbox_tmp/stdout.txt 2> /sandbox_tmp/stderr.txt; "
-                f"echo $? > /sandbox_tmp/exit_code.txt",
-            ])
+                *rendered,
+            ]
 
             start = time.time()
             try:
                 proc = subprocess.run(
-                    container_cmd,
-                    capture_output=True,
+                    cmd,
+                    input=stdin,
+                    capture_output=self.config.capture_output,
                     text=True,
                     timeout=self.config.timeout + 10,
+                    check=False,
                 )
-
-                exit_code = -1
-                try:
-                    ec_file = tmp / "exit_code.txt"
-                    if ec_file.exists():
-                        exit_code = int(ec_file.read_text().strip())
-                except Exception:
-                    pass
-
-                stdout = ""
-                try:
-                    sf = tmp / "stdout.txt"
-                    if sf.exists():
-                        stdout = sf.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    stdout = proc.stdout or ""
-
-                stderr = ""
-                try:
-                    ef = tmp / "stderr.txt"
-                    if ef.exists():
-                        stderr = ef.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    stderr = proc.stderr or ""
-
                 return DockerSandboxResult(
-                    success=exit_code == 0,
-                    exit_code=exit_code,
-                    stdout=stdout,
-                    stderr=stderr,
+                    success=proc.returncode == 0,
+                    exit_code=proc.returncode,
+                    stdout=proc.stdout or "",
+                    stderr=proc.stderr or "",
                     execution_time_ms=int((time.time() - start) * 1000),
-                    command=container_cmd,
+                    command=cmd,
                 )
             except subprocess.TimeoutExpired as e:
                 return DockerSandboxResult(
                     success=False, exit_code=-1,
                     stdout=e.stdout or "", stderr=e.stderr or "",
                     execution_time_ms=int((time.time() - start) * 1000),
-                    command=container_cmd, error="timeout",
+                    command=cmd, error="timeout",
                 )
             except FileNotFoundError:
                 return DockerSandboxResult(
                     success=False, exit_code=-1,
-                    stdout="", stderr="docker not found. Please install Docker.",
-                    execution_time_ms=int((time.time() - start) * 1000),
-                    command=container_cmd, error="docker not found",
+                    stdout="", stderr="docker not found.",
+                    execution_time_ms=0, command=cmd, error="docker not found",
                 )
-
-    def _execute_container(
-        self,
-        safe_sample: Path,
-        out_dir: Path,
-        args: list[str],
-        stdin_bytes: bytes | None = None,
-    ) -> DockerSandboxResult:
-        """执行 Docker 容器（安全模式：argv 直接传入，不用 shell）"""
-        container_cmd = [
-            "docker", "run", "--rm",
-            "--network", "bridge" if self.config.enable_network else "none",
-            "--read-only",
-            "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges",
-            "--pids-limit", str(self.config.pids_limit),
-            "--memory", f"{self.config.memory_mb}m",
-            "--cpus", str(self.config.cpus),
-            "--user", "65534:65534",
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-            "--mount", f"type=bind,src={safe_sample},dst=/input/sample,readonly",
-            "--mount", f"type=bind,src={out_dir},dst=/out",
-        ]
-
-        for key, value in self.config.extra_env.items():
-            container_cmd.extend(["-e", f"{key}={value}"])
-
-        container_cmd.extend([self.config.image] + args)
-
-        start = time.time()
-        try:
-            proc = subprocess.run(
-                container_cmd,
-                input=stdin_bytes,
-                capture_output=self.config.capture_output,
-                text=True,
-                timeout=self.config.timeout + 10,
-            )
-            return DockerSandboxResult(
-                success=proc.returncode == 0,
-                exit_code=proc.returncode,
-                stdout=proc.stdout or "",
-                stderr=proc.stderr or "",
-                execution_time_ms=int((time.time() - start) * 1000),
-                command=container_cmd,
-            )
-        except subprocess.TimeoutExpired as e:
-            return DockerSandboxResult(
-                success=False, exit_code=-1,
-                stdout=e.stdout or "", stderr=e.stderr or "",
-                execution_time_ms=int((time.time() - start) * 1000),
-                command=container_cmd, error="timeout",
-            )
-        except FileNotFoundError:
-            return DockerSandboxResult(
-                success=False, exit_code=-1,
-                stdout="", stderr="docker not found. Please install Docker.",
-                execution_time_ms=int((time.time() - start) * 1000),
-                command=container_cmd, error="docker not found",
-            )
-
-
-def _safe_quote(value: str) -> str:
-    """安全 shell 引号（用于非用户输入的场景）"""
-    return "'" + value.replace("'", "'\"'\"'") + "'"

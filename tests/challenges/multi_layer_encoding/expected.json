@@ -1,0 +1,10 @@
+{
+  "name": "multi_layer_encoding",
+  "description": "Flag is base64->hex encoded in strings",
+  "flag_regex": "flag\\\\{[^}]+\\\\}",
+  "expected_flag": "flag{multi_encode_test_bot}",
+  "input_channel": "unknown",
+  "allowed_solvers": ["encoding", "static_flag"],
+  "must_verify": false,
+  "max_seconds": 30
+}

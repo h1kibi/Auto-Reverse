@@ -209,7 +209,8 @@ async def get_report(sha256: str):
 @app.post("/solve", response_model=SolveResponse)
 async def solve_sample(request: SolveRequest):
     """CTF 求解"""
-    from .ctf.pipeline import solve_challenge
+    from ..ctf.pipeline import solve_challenge
+    from ..artifacts import compute_sha256, sample_artifact_dir
 
     sample = Path(request.sample_path)
     if not sample.exists():
@@ -233,7 +234,10 @@ async def solve_sample(request: SolveRequest):
             sample_sha256=result.sha256,
             flag=result.best_flag,
             method=result.method,
-            result_path=str(output_dir / "solve_result.json"),
+            solved=result.verified,
+            candidates_count=len(result.candidates),
+            summary=result.summary,
+            result_path=result.result_path or "",
         )
 
     except Exception as e:

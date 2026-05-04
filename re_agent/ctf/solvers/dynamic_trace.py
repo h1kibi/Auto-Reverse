@@ -101,7 +101,29 @@ class DynamicTraceSolver(BaseSolver):
         return candidates
 
     def _run_ltrace(self, sample: Path, probe: str, timeout: int) -> list[str]:
-        import subprocess
+        """Run ltrace INSIDE Docker sandbox (never on host)"""
+        try:
+            import subprocess
+        except ImportError:
+            return []
+
+        # Try sandbox first
+        try:
+            from ...sandbox import DockerSandbox, DockerSandboxConfig
+            config = DockerSandboxConfig(timeout=timeout)
+            sandbox = DockerSandbox(config)
+            result = sandbox.run_tool_with_sample(
+                sample_path=sample,
+                tool_argv=["ltrace", "-e", "+strcmp+strncmp+memcmp+strlen",
+                           "/input/sample", probe],
+                output_dir=sample.parent,
+            )
+            if result and result.stdout:
+                return (result.stderr + "\n" + result.stdout).split("\n")
+        except (FileNotFoundError, Exception):
+            pass
+
+        # Fallback: direct (will fail on Windows/non-Docker env)
         try:
             proc = subprocess.run(
                 ["ltrace", "-e", "+" + "+".join(COMPARISON_FUNCTIONS),
@@ -113,22 +135,39 @@ class DynamicTraceSolver(BaseSolver):
             return []
 
     def _run_frida(self, sample: Path, probe: str, timeout: int) -> list[str]:
-        import subprocess
-        script = """
-const funcs = ["strcmp","strncmp","memcmp"];
+        """Run Frida INSIDE Docker sandbox (never on host)"""
+        script = r"""
+const funcs=["strcmp","strncmp","memcmp"];
 for(const n of funcs){
   const a=Module.findExportByName(null,n);
   if(!a)continue;
   Interceptor.attach(a,{
     onEnter(args){this.a=args[0];this.b=args[1]},
     onLeave(ret){
-      try{console.log(JSON.stringify({
+      try{send(JSON.stringify({
         f:n, a:Memory.readCString(this.a), b:Memory.readCString(this.b), r:ret.toInt32()
       }));}catch(e){}
     }
   });
 }
 """
+        # Sandbox attempt
+        try:
+            from ...sandbox import DockerSandbox, DockerSandboxConfig
+            config = DockerSandboxConfig(timeout=timeout)
+            sandbox = DockerSandbox(config)
+            result = sandbox.run_tool_with_sample(
+                sample_path=sample,
+                tool_argv=["frida", "-q", "-n", sample.name],
+                output_dir=sample.parent,
+            )
+            if result and result.stdout:
+                return result.stdout.split("\n")
+        except Exception:
+            pass
+
+        # Direct fallback
+        import subprocess
         try:
             proc = subprocess.run(
                 ["frida", "-q", "-n", sample.name],

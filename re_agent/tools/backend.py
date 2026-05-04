@@ -299,14 +299,68 @@ class R2Backend(BaseBackend):
             return ""
 
 
+class ObjdumpBackend(BaseBackend):
+    """Objdump-based fallback backend"""
+    name = "objdump"
+
+    def analyze(self, sample: Path, output_dir: Path) -> BackendAnalysis:
+        return BackendAnalysis()
+
+    def decompile(self, function: str) -> str:
+        return ""
+
+
+class FakeBackend(BaseBackend):
+    """CI-friendly fake backend (no real tool dependencies)"""
+
+    name = "fake"
+
+    def analyze(self, sample: Path, output_dir: Path) -> BackendAnalysis:
+        result = BackendAnalysis()
+        result.functions = [
+            BackendFunction(name="main", address=0x401000, size=100),
+            BackendFunction(name="check_flag", address=0x401200, size=80),
+        ]
+        result.strings = [
+            BackendString(value="Correct!", address=0x402000),
+            BackendString(value="Wrong!", address=0x402010),
+            BackendString(value="flag{fake_test}", address=0x402020),
+        ]
+        result.imports = [
+            BackendImport(name="strcmp", library="libc.so.6"),
+            BackendImport(name="printf", library="libc.so.6"),
+        ]
+        result.entry_point = 0x401000
+        return result
+
+    def decompile(self, function: str) -> str:
+        if function == "main":
+            return "int main() { check_flag(input); return 0; }"
+        if function == "check_flag":
+            return "int check_flag(char* s) { if(strcmp(s, 'flag{fake_test}')==0) return 1; return 0; }"
+        return ""
+
+
 @dataclass
 class BackendConfig:
     """Backend selection configuration"""
     quick: bool = True
     ghidra: bool = False
     r2: bool = True
+    objdump: bool = False
+    fake: bool = False
     binary_ninja: bool = False
     ghidra_home: str | None = None
+
+
+ALLOWED_R2_ACTIONS: set[str] = {
+    "list_functions",
+    "list_strings",
+    "get_xrefs",
+    "disassemble_function",
+    "decompile_if_available",
+    "emulate_basic_block",
+}
 
 
 def get_backend(config: BackendConfig, sample_path: str, output_dir: str) -> BaseBackend:

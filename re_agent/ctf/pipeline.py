@@ -181,14 +181,15 @@ def solve_challenge(
                     c["confidence"] = max(c["confidence"], 0.97)
                     c["validation_mode"] = vr.mode
                     trace.log_verification(step_index, c["value"], True, vr.mode)
-                    result = _finalize_result(
-                        sha256=analysis.sample.sha256, winning=c,
-                        all_candidates=all_candidates, solver_runs=solver_runs,
-                        trace=trace, out=out, profile=profile,
-                        write_reflection=write_reflection, enable_memory=enable_memory,
-                    )
-                    _write_manifest(out, profile, result)
-                    return result
+    result = _finalize_result(
+        sha256=analysis.sample.sha256, winning=c,
+        all_candidates=all_candidates, solver_runs=solver_runs,
+        trace=trace, out=out, profile=profile,
+        write_reflection=write_reflection, enable_memory=enable_memory,
+    )
+    result.result_path = str(out / "solve_result.json")
+    _write_manifest(out, profile, result)
+    return result
 
     # ── 6. 未解出 ──
     trace.log_solve_end(step_index, False, "", None)
@@ -198,6 +199,7 @@ def solve_challenge(
         trace=trace, out=out, profile=profile,
         write_reflection=write_reflection, enable_memory=enable_memory,
     )
+    result.result_path = str(out / "solve_result.json")
     _write_manifest(out, profile, result)
     return result
 
@@ -316,6 +318,7 @@ def _write_manifest(out: Path, profile, result: SolveResult):
 
 
 def _reflect(profile, winning, solver_runs, enable_memory):
+    """Auto-generate SelfLesson (NEVER store raw flag value)"""
     try:
         from ..memory.schema import SelfLesson
         from ..memory.store import MemoryStore
@@ -325,16 +328,24 @@ def _reflect(profile, winning, solver_runs, enable_memory):
         signals.update(profile.crypto_hints)
         signals.update(profile.encoding_hints)
 
+        # Build recipe WITHOUT raw flag
+        winning_source = winning.get("source", "?") if winning else "?"
+        recipe = [
+            f"{winning_source} produced a candidate",
+            f"candidate validated through {winning.get('validation_mode', 'unknown')}" if winning else "",
+            "flag length: " + str(len(winning.get('value', ''))) if winning else "",
+        ]
+
         lesson = SelfLesson(
             id=f"lesson_{uuid.uuid4().hex[:12]}",
             challenge_sha256=profile.sha256,
             solved=True, verified=True,
-            winning_solver=winning.get("source", ""),
-            input_channel=winning.get("validation_mode", "unknown"),
+            winning_solver=winning_source,
+            input_channel=winning.get("validation_mode", "unknown") if winning else "",
             key_signals=sorted(signals),
             failed_attempts=[r.solver for r in solver_runs if r.status == "error"],
-            successful_recipe=[f"{winning.get('source', '?')}: {winning.get('value', '')}"],
-            generalized_pattern=f"{winning.get('source', '?')}: {', '.join(sorted(signals)[:5])}",
+            successful_recipe=recipe,
+            generalized_pattern=f"{winning_source}: {', '.join(sorted(signals)[:5])}",
             confidence=0.8,
         )
         store = MemoryStore("memory.db")

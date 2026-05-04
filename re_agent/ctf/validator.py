@@ -79,7 +79,33 @@ class OutputOracle:
         ]
 
     def evaluate(self, stdout: str, stderr: str, exit_code: int | None, timed_out: bool = False) -> OracleResult:
-        """Evaluate output against oracle patterns"""
+        return self._evaluate(stdout, stderr, exit_code, timed_out)
+
+    def evaluate_differential(
+        self,
+        candidate_stdout: str,
+        candidate_stderr: str,
+        wrong_stdout: str,
+        wrong_stderr: str,
+        exit_code: int | None,
+    ) -> OracleResult:
+        """Differential oracle: compare candidate output vs wrong-input output."""
+        r = self._evaluate(candidate_stdout, candidate_stderr, exit_code)
+        if not r.accepted:
+            return r
+
+        if candidate_stdout.strip() != wrong_stdout.strip():
+            r.reasons.append("output_different_from_wrong_input")
+            r.confidence = min(1.0, r.confidence + 0.1)
+            r.accepted = r.confidence >= 0.7
+        if candidate_stderr.strip() != wrong_stderr.strip():
+            r.reasons.append("stderr_different_from_wrong_input")
+            r.confidence = min(1.0, r.confidence + 0.05)
+            r.accepted = r.confidence >= 0.7
+
+        return r
+
+    def _evaluate(self, stdout: str, stderr: str, exit_code: int | None, timed_out: bool = False) -> OracleResult:
         reasons: list[str] = []
         score = 0.0
         merged = f"{stdout}\n{stderr}"
@@ -196,18 +222,19 @@ class FlagValidator:
         mode: str,
     ) -> ValidationResult:
         if mode == "argv":
-            command = f"/input/sample {_shell_quote(candidate)}"
-            result = sandbox.run_argv(
+            command = f"/input/sample {candidate}"
+            result = sandbox.run_exec(
                 sample_path=sample_path,
+                argv=[candidate],
                 output_dir=output_dir,
-                argv=["/input/sample", candidate],
             )
         elif mode == "stdin":
-            command = f"printf '{_shell_quote(candidate)}' | /input/sample"
-            result = sandbox.run_shell(
+            command = f"/input/sample (stdin={candidate[:20]}...)"
+            result = sandbox.run_exec(
                 sample_path=sample_path,
+                argv=[],
+                stdin=(candidate + "\n").encode(),
                 output_dir=output_dir,
-                shell_cmd=f"/input/sample < /dev/stdin",
             )
         else:
             raise ValueError(f"unsupported validation mode: {mode}")

@@ -124,6 +124,120 @@ class EvidenceGraph:
                             pass
         return targets
 
+    def strings_matching(self, patterns: list[str]) -> list[StringNode]:
+        """Return strings matching any of the given patterns (case-insensitive)"""
+        result = []
+        for s in self.strings:
+            for pat in patterns:
+                if pat.lower() in s.value.lower():
+                    result.append(s)
+                    break
+        return result
+
+    def xrefs_to_string(self, string_id: str) -> list:
+        """Return all xrefs targeting a specific string"""
+        for s in self.strings:
+            if s.id == string_id:
+                return s.xrefs
+        return []
+
+    def functions_referencing_success_or_failure(self) -> list[FunctionNode]:
+        """Return functions that reference success or failure strings"""
+        targets = self.get_xref_targets_for_strings(
+            ["correct", "success", "congrat", "wrong", "fail", "invalid"]
+        )
+        result = []
+        for fn in self.functions:
+            if fn.address in targets:
+                result.append(fn)
+        return result
+
+    def likely_validation_functions(self) -> list[FunctionNode]:
+        """Return functions likely to be validation/key-check functions"""
+        result = []
+        for fn in self.functions:
+            has_comparison = "comparison" in fn.tags
+            has_crypto = "crypto" in fn.tags
+            has_input = "input" in fn.tags
+            if has_comparison or (has_crypto and has_input):
+                result.append(fn)
+        return result
+
+    def get_context_bundle(self, function: str, token_budget: int = 2000) -> dict:
+        """Build a FunctionContextBundle for LLM consumption"""
+        fn_node = None
+        for fn in self.functions:
+            if fn.name == function or hex(fn.address) == function:
+                fn_node = fn
+                break
+
+        ref_strings = []
+        for s in self.strings:
+            if fn_node and str(fn_node.address) in s.xrefs:
+                ref_strings.append(s.value)
+            if fn_node and fn_node.name in s.value:
+                ref_strings.append(s.value)
+
+        return {
+            "function": function,
+            "address": fn_node.address if fn_node else 0,
+            "decompile_excerpt": fn_node.decompile_artifact or "",
+            "callers": fn_node.xrefs_to if fn_node else [],
+            "callees": fn_node.calls if fn_node else [],
+            "referenced_strings": ref_strings[:10],
+            "imports_used": [i.name for i in self.imports
+                             if any(t in ("comparison", "input", "network") for t in i.tags)],
+            "constants": self._extract_constants() if fn_node else [],
+            "suspicious_patterns": fn_node.tags if fn_node else [],
+            "evidence_ids": [fn_node.id] if fn_node else [],
+        }
+
+    def _extract_constants(self) -> list[str]:
+        """Extract suspicious constants from string nodes"""
+        import re
+        consts = []
+        for s in self.strings:
+            for m in re.finditer(r"0x[0-9a-fA-F]{2,8}", s.value):
+                consts.append(m.group())
+        return consts[:20]
+
+    def to_snapshot(self) -> dict:
+        """Export deterministic snapshot (kernagent-style). 
+        Same binary + same tools -> same snapshot."""
+        import json
+        from datetime import datetime
+        return {
+            "run_id": self.run_id,
+            "created_at": datetime.now().isoformat(),
+            "functions": [
+                {"id": f.id, "address": f.address, "name": f.name,
+                 "size": f.size, "tags": f.tags, "calls": f.calls,
+                 "xrefs_from": f.xrefs_from, "xrefs_to": f.xrefs_to}
+                for f in self.functions
+            ],
+            "strings": [
+                {"id": s.id, "value": s.value, "address": s.address,
+                 "tags": s.tags, "xrefs": s.xrefs}
+                for s in self.strings
+            ],
+            "imports": [
+                {"name": i.name, "library": i.library, "tags": i.tags}
+                for i in self.imports
+            ],
+            "dynamic_events": [
+                {"id": e.id, "kind": e.kind, "function": e.function,
+                 "args": e.args, "result": e.result}
+                for e in self.dynamic_events
+            ],
+        }
+
+    def save_snapshot(self, path: Path) -> None:
+        import json
+        path.write_text(
+            json.dumps(self.to_snapshot(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def get_functions_by_tag(self, tag: str) -> list[FunctionNode]:
         return [fn for fn in self.functions if tag in fn.tags]
 

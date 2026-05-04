@@ -309,9 +309,6 @@ def extract_from_decompile(code: str) -> dict | None:
     if not constraints:
         return None
 
-    for c in constraints:
-        c.pop("evidence", None)
-
     spec = {
         "length": min(length or 32, 128),
         "constraints": constraints[:80],

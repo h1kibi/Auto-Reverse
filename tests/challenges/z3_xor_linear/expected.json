@@ -1,0 +1,11 @@
+{
+  "name": "z3_xor_linear",
+  "description": "20-byte xor linear constraint flag",
+  "flag_regex": "flag\\\\{[^}]+\\\\}",
+  "expected_flag": "flag{z3_xor_linear_ok}",
+  "input_channel": "stdin",
+  "allowed_solvers": ["z3_extractor", "z3_constraints", "dynamic_trace"],
+  "must_verify": true,
+  "max_seconds": 60,
+  "tags": ["z3", "xor", "stdin"]
+}

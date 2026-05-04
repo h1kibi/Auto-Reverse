@@ -266,6 +266,12 @@ def cmd_solve(args):
     sha256 = compute_sha256(sample)
     output_dir = Path(args.output) if args.output else sample_artifact_dir("artifacts/results", sha256)
 
+    skip_ghidra = args.skip_ghidra
+    if args.deep:
+        skip_ghidra = False
+    if args.quick:
+        skip_ghidra = True
+
     print(f"{'='*60}")
     print(f"Reverse-Agent CTF Solver")
     print(f"{'='*60}")
@@ -273,13 +279,14 @@ def cmd_solve(args):
     print(f"SHA256: {sha256}")
     print(f"输出: {output_dir}")
     print(f"Flag Regex: {args.flag_regex}")
+    print(f"Mode: {'Deep' if not skip_ghidra else 'Quick'}")
     print(f"{'='*60}")
 
     result = solve_challenge(
         sample_path=str(sample),
         output_dir=str(output_dir),
         flag_regex=args.flag_regex,
-        skip_ghidra=args.skip_ghidra,
+        skip_ghidra=skip_ghidra,
         timeout=args.timeout,
         validate=not args.no_validate,
         enable_memory=args.enable_memory,
@@ -511,6 +518,10 @@ def cmd_memory(args):
         return _cmd_memory_stats(db_path)
     elif action == "reflect":
         return _cmd_memory_reflect(args, db_path)
+    elif action == "list":
+        return _cmd_memory_list(args, db_path)
+    elif action == "show":
+        return _cmd_memory_show(args, db_path)
     else:
         print(f"Unknown memory action: {action}")
         return 1
@@ -617,6 +628,47 @@ def _cmd_memory_reflect(args, db_path):
         store.add_self_lesson(lesson)
         store.close()
         print(f"Added self-lesson for {args.sha256[:16]}...")
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
+def _cmd_memory_list(args, db_path):
+    from .memory.store import MemoryStore
+    try:
+        store = MemoryStore(db_path)
+        if getattr(args, "tag", None):
+            pbs = store.search_playbooks_by_tag([args.tag], limit=args.limit)
+        else:
+            pbs = store.list_playbooks(limit=args.limit)
+        print(f"\nPlaybooks ({len(pbs)}):")
+        for pb in pbs:
+            print(f"  {pb.id} | {pb.title} | tags={pb.pattern_tags[:5]}")
+        store.close()
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
+def _cmd_memory_show(args, db_path):
+    from .memory.store import MemoryStore
+    try:
+        store = MemoryStore(db_path)
+        pb = store.get_playbook(args.id)
+        if not pb:
+            print(f"Not found: {args.id}")
+            return 1
+        print(f"\nTitle: {pb.title}")
+        print(f"Source: {pb.source_name} {pb.source_url}")
+        print(f"Tags: {pb.pattern_tags}")
+        print(f"Signals: {pb.signals}")
+        print(f"Steps:")
+        for s in pb.tactic_steps[:10]:
+            print(f"  - {s}")
+        print(f"Pitfalls: {pb.pitfalls}")
+        store.close()
     except Exception as e:
         print(f"Error: {e}")
         return 1
@@ -767,9 +819,26 @@ def main():
     )
     solve_parser.add_argument(
         "--skip-ghidra",
+        dest="skip_ghidra",
         action="store_true",
-        default=True,
         help="跳过 Ghidra 分析",
+    )
+    solve_parser.add_argument(
+        "--ghidra",
+        dest="skip_ghidra",
+        action="store_false",
+        help="启用 Ghidra 分析",
+    )
+    solve_parser.set_defaults(skip_ghidra=True)
+    solve_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="快速模式 (skip Ghidra)",
+    )
+    solve_parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="深度模式 (启用 Ghidra)",
     )
     solve_parser.add_argument(
         "--timeout",
@@ -941,6 +1010,17 @@ def main():
     reflect_parser.add_argument("sha256", help="样本 SHA256")
     reflect_parser.add_argument("--solver", default="", help="获胜 solver")
     reflect_parser.add_argument("--db", default="memory.db", help="数据库路径")
+
+    # memory list
+    list_parser = memory_sub.add_parser("list", help="列出记忆条目")
+    list_parser.add_argument("--db", default="memory.db", help="数据库路径")
+    list_parser.add_argument("--tag", help="按标签过滤")
+    list_parser.add_argument("--limit", type=int, default=20)
+
+    # memory show
+    show_parser = memory_sub.add_parser("show", help="显示单条记忆详情")
+    show_parser.add_argument("id", help="记忆条目 ID")
+    show_parser.add_argument("--db", default="memory.db", help="数据库路径")
 
     args = parser.parse_args()
 

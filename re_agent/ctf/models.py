@@ -56,6 +56,7 @@ class SolveResult:
     solver_runs: list[SolverRun] = field(default_factory=list)
     trace_path: str | None = None
     reproduce_path: str | None = None
+    result_path: str | None = None
     summary: str = ""
     errors: list[str] = field(default_factory=list)
 

@@ -14,8 +14,8 @@ from .gdb_tool import GDBTool
 from .pefile_tool import PEFileTool, HAS_PEFILE
 from .backend import (
     ReverseBackend, BaseBackend, BackendAnalysis,
-    QuickBackend, GhidraBackend, R2Backend,
-    BackendConfig, get_backend,
+    QuickBackend, GhidraBackend, R2Backend, ObjdumpBackend, FakeBackend,
+    BackendConfig, get_backend, ALLOWED_R2_ACTIONS,
     BackendFunction, BackendString, BackendImport,
 )
 
@@ -24,7 +24,7 @@ __all__ = [
     "ObjdumpTool", "YaraTool", "GhidraTool", "R2Tool", "GDBTool",
     "PEFileTool", "HAS_PEFILE",
     "ReverseBackend", "BaseBackend", "BackendAnalysis",
-    "QuickBackend", "GhidraBackend", "R2Backend",
-    "BackendConfig", "get_backend",
+    "QuickBackend", "GhidraBackend", "R2Backend", "ObjdumpBackend", "FakeBackend",
+    "BackendConfig", "get_backend", "ALLOWED_R2_ACTIONS",
     "BackendFunction", "BackendString", "BackendImport",
 ]

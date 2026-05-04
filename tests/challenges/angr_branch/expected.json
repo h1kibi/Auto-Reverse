@@ -1,0 +1,11 @@
+{
+  "name": "angr_branch",
+  "description": "Two-branch strcmp with success/failure strings",
+  "flag_regex": "flag\\\\{[^}]+\\\\}",
+  "expected_flag": "flag{angr_branch_test}",
+  "input_channel": "argv",
+  "allowed_solvers": ["angr_path", "dynamic_trace"],
+  "must_verify": true,
+  "max_seconds": 90,
+  "tags": ["angr", "argv", "strcmp"]
+}
