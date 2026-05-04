@@ -123,11 +123,33 @@ class Mode:
     API_REVERSE = "api_reverse"
 
 
+def auto_route_mode(profile) -> str:
+    """OGhidra-style: auto-route based on profile signals."""
+    if not profile:
+        return Mode.SOLVE
+
+    signals = (getattr(profile, "tags", []) +
+               getattr(profile, "comparison_hints", []) +
+               getattr(profile, "encoding_hints", []))
+
+    # Deep investigation needed
+    if any(s in str(signals) for s in ["anti_debug", "packed", "stripped"]):
+        return Mode.DEEP
+    if getattr(profile, "protections", []):
+        return Mode.DEEP
+
+    # Simple scan sufficient
+    if getattr(profile, "solver_hints", []) == ["static_flag"]:
+        return Mode.QUICK
+
+    return Mode.SOLVE
+
+
 MODE_TOOLS: dict[str, list[str]] = {
     Mode.QUICK: ["file", "strings", "readelf", "r2_lite"],
     Mode.DEEP: ["ghidra", "r2", "angr", "z3"],
     Mode.SOLVE: ["static_flag", "encoding", "dynamic_trace", "z3_extractor", "angr_path"],
-    Mode.INVESTIGATE: ["decompile_function", "read_artifact_range", "list_artifacts"],
+    Mode.INVESTIGATE: ["decompile_function", "read_artifact_range", "list_artifacts", "rank_functions"],
     Mode.API_REVERSE: ["export_analysis", "abi_inference", "harness_generation"],
 }
 
