@@ -1,0 +1,10 @@
+{
+  "name": "static_flag",
+  "description": "Flag is in plaintext strings",
+  "flag_regex": "flag\\\\{[^}]+\\\\}",
+  "expected_flag": "flag{static_strings_flag_2024}",
+  "input_channel": "unknown",
+  "allowed_solvers": ["static_flag"],
+  "must_verify": false,
+  "max_seconds": 30
+}

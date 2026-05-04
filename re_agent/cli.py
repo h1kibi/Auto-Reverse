@@ -282,6 +282,8 @@ def cmd_solve(args):
         skip_ghidra=args.skip_ghidra,
         timeout=args.timeout,
         validate=not args.no_validate,
+        enable_memory=args.enable_memory,
+        enable_llm_planner=args.enable_llm_planner,
     )
 
     print(f"\n{'='*60}")
@@ -488,6 +490,139 @@ def cmd_agent(args):
     return 0 if result.get("solved") else 2
 
 
+def cmd_memory(args):
+    """记忆管理命令"""
+    import json
+    import uuid
+    from pathlib import Path
+
+    action = getattr(args, "memory_action", None)
+    if not action:
+        print("Usage: re-agent memory {ingest|search|stats|reflect}")
+        return 1
+
+    db_path = getattr(args, "db", "memory.db")
+
+    if action == "ingest":
+        return _cmd_memory_ingest(args, db_path)
+    elif action == "search":
+        return _cmd_memory_search(args, db_path)
+    elif action == "stats":
+        return _cmd_memory_stats(db_path)
+    elif action == "reflect":
+        return _cmd_memory_reflect(args, db_path)
+    else:
+        print(f"Unknown memory action: {action}")
+        return 1
+
+
+def _cmd_memory_ingest(args, db_path):
+    from pathlib import Path
+    from .memory.store import MemoryStore
+    from .memory.ingest import ingest_and_distill
+
+    path = Path(args.path)
+    if not path.exists():
+        print(f"File not found: {path}")
+        return 1
+
+    try:
+        store = MemoryStore(db_path)
+        use_llm = getattr(args, "use_llm", False)
+
+        pb = ingest_and_distill(
+            path=path, store=store,
+            source_url=getattr(args, "source_url", ""),
+            source_name=getattr(args, "source_name", "manual"),
+            use_llm=use_llm,
+        )
+
+        if pb:
+            print(f"Ingested playbook: {pb.title} (id={pb.id}, tags={pb.pattern_tags})")
+            if use_llm:
+                print(f"  Signals: {pb.signals[:5]}")
+                print(f"  Steps: {len(pb.tactic_steps)}")
+        else:
+            print("Failed to ingest playbook.")
+            return 1
+
+        store.close()
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
+def _cmd_memory_search(args, db_path):
+    from .memory.store import MemoryStore
+    from .memory.retriever import MemoryRetriever
+
+    try:
+        store = MemoryStore(db_path)
+        retriever = MemoryRetriever(store)
+        results = retriever.search(args.query, limit=args.limit)
+
+        print(f"\nMemory search results for '{args.query}':")
+        print(f"{'='*60}")
+        for i, r in enumerate(results, 1):
+            print(f"{i}. [{r['type']}] {r['title']}")
+            if r.get("tags"):
+                print(f"   Tags: {', '.join(r['tags'][:5])}")
+            if r.get("tactic_steps"):
+                for step in r["tactic_steps"][:3]:
+                    print(f"   - {step[:80]}")
+            print()
+        if not results:
+            print("  (no results)")
+        store.close()
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
+def _cmd_memory_stats(db_path):
+    from .memory.store import MemoryStore
+
+    try:
+        store = MemoryStore(db_path)
+        stats = store.stats()
+        print(f"\nMemory Store Stats:")
+        print(f"  Playbooks: {stats['playbooks']}")
+        print(f"  Self-lessons: {stats['self_lessons']}")
+        print(f"  Solved lessons: {stats['solved_lessons']}")
+        store.close()
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
+def _cmd_memory_reflect(args, db_path):
+    from .memory.schema import SelfLesson
+    from .memory.store import MemoryStore
+
+    try:
+        store = MemoryStore(db_path)
+        lesson = SelfLesson(
+            id=f"lesson_{uuid.uuid4().hex[:12]}",
+            challenge_sha256=args.sha256,
+            solved=False if not args.solver else True,
+            verified=False if not args.solver else True,
+            winning_solver=args.solver or None,
+            key_signals=["manual_reflection"],
+            generalized_pattern=f"Manual reflection for {args.sha256[:16]}",
+            confidence=0.3,
+        )
+        store.add_self_lesson(lesson)
+        store.close()
+        print(f"Added self-lesson for {args.sha256[:16]}...")
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -647,6 +782,16 @@ def main():
         action="store_true",
         help="跳过验证",
     )
+    solve_parser.add_argument(
+        "--enable-memory",
+        action="store_true",
+        help="启用记忆检索",
+    )
+    solve_parser.add_argument(
+        "--enable-llm-planner",
+        action="store_true",
+        help="启用 LLM 规划器",
+    )
 
     # ========== serve 命令 ==========
     serve_parser = subparsers.add_parser(
@@ -766,6 +911,37 @@ def main():
         help="最大工具调用轮数",
     )
 
+    # ========== memory 命令组 ==========
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="记忆管理（playbook / self-lesson）",
+    )
+    memory_sub = memory_parser.add_subparsers(dest="memory_action", help="子命令")
+
+    # memory ingest
+    ingest_parser = memory_sub.add_parser("ingest", help="导入社区文章为 Playbook")
+    ingest_parser.add_argument("path", help="Markdown 或 JSON 文件路径")
+    ingest_parser.add_argument("--source-url", default="", help="文章来源 URL")
+    ingest_parser.add_argument("--source-name", default="manual", help="来源名称")
+    ingest_parser.add_argument("--db", default="memory.db", help="数据库路径")
+    ingest_parser.add_argument("--use-llm", action="store_true", help="使用 LLM 蒸馏为结构化 Playbook")
+
+    # memory search
+    search_parser = memory_sub.add_parser("search", help="搜索记忆")
+    search_parser.add_argument("query", help="搜索关键词")
+    search_parser.add_argument("--db", default="memory.db", help="数据库路径")
+    search_parser.add_argument("--limit", type=int, default=10)
+
+    # memory stats
+    stats_parser = memory_sub.add_parser("stats", help="记忆统计")
+    stats_parser.add_argument("--db", default="memory.db", help="数据库路径")
+
+    # memory reflect
+    reflect_parser = memory_sub.add_parser("reflect", help="从求解 trace 生成 SelfLesson")
+    reflect_parser.add_argument("sha256", help="样本 SHA256")
+    reflect_parser.add_argument("--solver", default="", help="获胜 solver")
+    reflect_parser.add_argument("--db", default="memory.db", help="数据库路径")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -790,6 +966,8 @@ def main():
         return cmd_ask(args)
     elif args.command == "serve":
         return cmd_serve(args)
+    elif args.command == "memory":
+        return cmd_memory(args)
 
     return 0
 

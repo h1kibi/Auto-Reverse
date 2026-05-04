@@ -1,0 +1,10 @@
+{
+  "name": "argv_strcmp",
+  "description": "Flag checked via argv strcmp",
+  "flag_regex": "flag\\\\{[^}]+\\\\}",
+  "expected_flag": "flag{argv_strcmp_test}",
+  "input_channel": "argv",
+  "allowed_solvers": ["dynamic_trace", "angr_path"],
+  "must_verify": true,
+  "max_seconds": 60
+}

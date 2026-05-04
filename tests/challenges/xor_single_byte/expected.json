@@ -1,0 +1,10 @@
+{
+  "name": "xor_single_byte",
+  "description": "Flag is xor single byte (0x23) encoded",
+  "flag_regex": "flag\\\\{[^}]+\\\\}",
+  "expected_flag": "flag{xor_encoded_flag_hmm}",
+  "input_channel": "unknown",
+  "allowed_solvers": ["decoding", "z3_constraints"],
+  "must_verify": false,
+  "max_seconds": 30
+}

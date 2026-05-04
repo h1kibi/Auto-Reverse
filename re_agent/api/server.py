@@ -19,13 +19,17 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .pipeline import run_analysis
-from .reporter import ReportGenerator
-from .database import Database
-from .analyzer import FunctionAnalyzer
-from .qa import QASystem
-from .llm import LLMFactory
-from .artifacts import compute_sha256, sample_artifact_dir, sample_upload_path, safe_filename
+from ..pipeline import run_analysis
+from ..reporter import ReportGenerator
+from ..database import Database
+from ..analyzer import FunctionAnalyzer
+from ..qa import QASystem
+from ..llm import LLMFactory
+from ..artifacts import compute_sha256, sample_artifact_dir, sample_upload_path, safe_filename
+from .schemas import (
+    AnalyzeRequest, SolveRequest, AnalyzeResponse, SolveResponse,
+    AskRequest, AskResponse, MemorySearchRequest, MemorySearchResponse,
+)
 
 app = FastAPI(
     title="Reverse-Agent API",
@@ -56,46 +60,7 @@ def get_llm():
     return llm_client
 
 
-# ========== 请求/响应模型 ==========
-
-class AnalyzeRequest(BaseModel):
-    sample_path: str
-    skip_ghidra: bool = False
-
-
-class SolveRequest(BaseModel):
-    sample_path: str
-    flag_regex: str = r"(flag|ctf|picoCTF|hgame|nssctf|h1kibi)\{[^}\r\n]{1,160}\}"
-    skip_ghidra: bool = True
-    timeout: int = 120
-    validate: bool = True
-
-
-class AskRequest(BaseModel):
-    sample_sha256: str
-    question: str
-
-
-class AnalyzeResponse(BaseModel):
-    status: str
-    sample_sha256: str
-    report_path: str
-    report_url: str
-    function_count: int
-    message: str
-
-
-class SolveResponse(BaseModel):
-    status: str
-    sample_sha256: str
-    flag: str | None
-    method: str
-    result_path: str
-
-
-class AskResponse(BaseModel):
-    question: str
-    answer: str
+# ========== 请求/响应模型已移至 api/schemas.py ==========
 
 
 # ========== API 端点 ==========
@@ -260,7 +225,7 @@ async def solve_sample(request: SolveRequest):
             flag_regex=request.flag_regex,
             skip_ghidra=request.skip_ghidra,
             timeout=request.timeout,
-            validate=request.validate,
+            validate=request.do_verify,
         )
 
         return SolveResponse(

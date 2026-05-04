@@ -1,46 +1,52 @@
 """
-Flag 验证器
+Flag Validator (v2)
 
-原则：
-- solver 只产生候选；
-- validator 才能给 verified verdict；
-- 每次验证都保留结构化 JSON；
-- solved candidate 生成 reproduce.py。
+Multi-signal oracle:
+- success/failure pattern matching
+- exit code analysis
+- timing differential (optional)
+- output pattern analysis
+- confidence scoring
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..sandbox import DockerSandbox, DockerSandboxConfig
 
 
 SUCCESS_PATTERNS = [
-    r"\bcorrect\b",
-    r"\bsuccess\b",
-    r"\baccepted\b",
-    r"congrat",
-    r"good job",
-    r"you win",
-    r"well done",
+    r"\bcorrect\b", r"\bsuccess\b", r"\baccepted\b",
+    r"congrat", r"good job", r"you win", r"well done",
+    r"hooray", r"flag is", r"right",
 ]
 
 FAILURE_PATTERNS = [
-    r"\bwrong\b",
-    r"\bincorrect\b",
-    r"\bfailed?\b",
-    r"\binvalid\b",
-    r"try again",
-    r"nope",
-    r"\bbad\b",
+    r"\bwrong\b", r"\bincorrect\b", r"\bfailed?\b",
+    r"\binvalid\b", r"try again", r"nope", r"\bbad\b",
+    r"you lose", r"incorrect flag",
 ]
 
 
 @dataclass
+class OracleResult:
+    """Multi-signal oracle evaluation result"""
+    accepted: bool
+    confidence: float
+    reasons: list[str] = field(default_factory=list)
+    stdout_excerpt: str = ""
+    stderr_excerpt: str = ""
+    exit_code: int | None = None
+    timed_out: bool = False
+
+
+@dataclass
 class ValidationResult:
+    """Validation result (backward compatible)"""
     accepted: bool
     candidate: str
     mode: str
@@ -51,18 +57,18 @@ class ValidationResult:
     matched_failure: bool
     command: str
     evidence: list[str]
+    oracle: OracleResult | None = None
+    confidence: float = 0.0
 
 
-class FlagValidator:
-    """Flag 验证器。"""
+class OutputOracle:
+    """Multi-signal output oracle"""
 
     def __init__(
         self,
-        timeout: int = 10,
         success_patterns: list[str] | None = None,
         failure_patterns: list[str] | None = None,
     ):
-        self.timeout = timeout
         self.success_patterns = [
             re.compile(p, re.IGNORECASE)
             for p in (success_patterns or SUCCESS_PATTERNS)
@@ -72,6 +78,79 @@ class FlagValidator:
             for p in (failure_patterns or FAILURE_PATTERNS)
         ]
 
+    def evaluate(self, stdout: str, stderr: str, exit_code: int | None, timed_out: bool = False) -> OracleResult:
+        """Evaluate output against oracle patterns"""
+        reasons: list[str] = []
+        score = 0.0
+        merged = f"{stdout}\n{stderr}"
+
+        if timed_out:
+            return OracleResult(
+                accepted=False, confidence=0.0,
+                reasons=["timed out"], timed_out=True,
+                stdout_excerpt=stdout[:2000], stderr_excerpt=stderr[:2000],
+                exit_code=exit_code,
+            )
+
+        # Check success patterns
+        matched_success = any(p.search(merged) for p in self.success_patterns)
+        if matched_success:
+            score += 0.7
+            reasons.append("success_pattern_matched")
+
+        # Check failure patterns
+        matched_failure = any(p.search(merged) for p in self.failure_patterns)
+        if matched_failure:
+            score -= 0.7
+            reasons.append("failure_pattern_matched")
+
+        # Exit code signals
+        if exit_code == 0:
+            score += 0.1
+            reasons.append("exit_code_zero")
+
+        if exit_code is not None and exit_code > 0:
+            score -= 0.1
+            reasons.append("exit_code_nonzero")
+
+        # Content quality signals
+        merged_lower = merged.lower()
+        if len(stdout.strip()) > 0 and "wrong" not in merged_lower:
+            score += 0.05
+
+        if "incorrect" not in merged_lower:
+            score += 0.05
+
+        # Flag-like in output
+        if re.search(r"(?:flag|ctf)\{[^}]+\}", merged, re.IGNORECASE):
+            score += 0.05
+            reasons.append("flag_like_in_output")
+
+        confidence = max(0.0, min(1.0, score))
+        accepted = confidence >= 0.7
+
+        return OracleResult(
+            accepted=accepted,
+            confidence=confidence,
+            reasons=reasons,
+            stdout_excerpt=stdout[:2000],
+            stderr_excerpt=stderr[:2000],
+            exit_code=exit_code,
+        )
+
+
+class FlagValidator:
+    """Flag validator with multi-signal oracle"""
+
+    def __init__(
+        self,
+        timeout: int = 10,
+        success_patterns: list[str] | None = None,
+        failure_patterns: list[str] | None = None,
+    ):
+        self.timeout = timeout
+        self.oracle = OutputOracle(success_patterns, failure_patterns)
+
     def validate(
         self,
         sample_path: Path,
@@ -79,10 +158,6 @@ class FlagValidator:
         output_dir: Path | None = None,
         modes: list[str] | None = None,
     ) -> ValidationResult:
-        """验证候选 flag。
-
-        默认依次尝试 argv 和 stdin。任一模式 accepted 即返回。
-        """
         sample_path = Path(sample_path).resolve()
         output_dir = Path(output_dir or sample_path.parent).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -121,71 +196,77 @@ class FlagValidator:
         mode: str,
     ) -> ValidationResult:
         if mode == "argv":
-            command = f"/samples/{sample_path.name} {_shell_quote(candidate)}"
+            command = f"/input/sample {_shell_quote(candidate)}"
             result = sandbox.run_argv(
                 sample_path=sample_path,
                 output_dir=output_dir,
-                argv=["{sample}", candidate],
+                argv=["/input/sample", candidate],
             )
         elif mode == "stdin":
-            command = f"printf '%s\\n' {_shell_quote(candidate)} | /samples/{sample_path.name}"
+            command = f"printf '{_shell_quote(candidate)}' | /input/sample"
             result = sandbox.run_shell(
                 sample_path=sample_path,
                 output_dir=output_dir,
-                shell_cmd=command,
+                shell_cmd=f"/input/sample < /dev/stdin",
             )
         else:
             raise ValueError(f"unsupported validation mode: {mode}")
 
         stdout = result.stdout or ""
         stderr = result.stderr or ""
-        merged = f"{stdout}\n{stderr}"
 
-        matched_success = any(p.search(merged) for p in self.success_patterns)
-        matched_failure = any(p.search(merged) for p in self.failure_patterns)
+        oracle = self.oracle.evaluate(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=result.exit_code,
+            timed_out=(result.error == "timeout"),
+        )
 
         evidence: list[str] = []
-        if matched_success:
-            evidence.append(f"mode={mode}: program output matched success pattern")
-        if matched_failure:
-            evidence.append(f"mode={mode}: program output matched failure pattern")
+        evidence.extend(oracle.reasons)
         if result.error:
             evidence.append(f"mode={mode}: sandbox error: {result.error}")
 
-        accepted = matched_success and not matched_failure
-
         return ValidationResult(
-            accepted=accepted,
+            accepted=oracle.accepted,
             candidate=candidate,
             mode=mode,
             exit_code=result.exit_code,
             stdout=stdout[-4000:],
             stderr=stderr[-4000:],
-            matched_success=matched_success,
-            matched_failure=matched_failure,
+            matched_success="success_pattern_matched" in oracle.reasons,
+            matched_failure="failure_pattern_matched" in oracle.reasons,
             command=command,
             evidence=evidence,
+            oracle=oracle,
+            confidence=oracle.confidence,
         )
 
     def _pick_best(self, results: list[ValidationResult]) -> ValidationResult:
         if not results:
             raise ValueError("no validation results")
 
-        success_like = [r for r in results if r.matched_success]
+        success_like = [r for r in results if r.matched_success and not r.matched_failure]
         if success_like:
             return success_like[0]
 
-        return results[0]
+        return max(results, key=lambda r: r.confidence)
 
     def _write_json(self, path: Path, result: ValidationResult) -> None:
+        data = asdict(result)
+        if result.oracle:
+            data["oracle"] = asdict(result.oracle)
         path.write_text(
-            json.dumps(asdict(result), ensure_ascii=False, indent=2),
+            json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
     def _append_jsonl(self, path: Path, result: ValidationResult) -> None:
+        data = asdict(result)
+        if result.oracle:
+            data["oracle"] = asdict(result.oracle)
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
+            f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
     def _write_reproducer(
         self,

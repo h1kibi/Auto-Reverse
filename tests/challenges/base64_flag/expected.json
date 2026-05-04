@@ -1,0 +1,10 @@
+{
+  "name": "base64_flag",
+  "description": "Flag is base64 encoded in strings",
+  "flag_regex": "flag\\\\{[^}]+\\\\}",
+  "expected_flag": "flag{base64_encoded_flag}",
+  "input_channel": "unknown",
+  "allowed_solvers": ["static_flag", "decoding"],
+  "must_verify": false,
+  "max_seconds": 30
+}
