@@ -88,3 +88,14 @@ class OpenAIBrain(OpenAICompatibleBrain):
             api_key=api_key or os.getenv("OPENAI_API_KEY", ""),
             model=model,
         )
+
+
+class MiMoBrain(OpenAICompatibleBrain):
+    name = "mimo"
+
+    def __init__(self, model: str = "mimo-v2.5-pro", api_key: str | None = None):
+        super().__init__(
+            base_url=os.getenv("MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1"),
+            api_key=api_key or os.getenv("MIMO_API_KEY", ""),
+            model=model,
+        )

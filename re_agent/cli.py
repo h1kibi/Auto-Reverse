@@ -767,6 +767,9 @@ def cmd_llm_solve(args):
         if args.brain == "deepseek":
             from .brain.deepseek import DeepSeekBrain
             brain = DeepSeekBrain(model=args.model or "deepseek-chat")
+        elif args.brain == "mimo":
+            from .brain.deepseek import MiMoBrain
+            brain = MiMoBrain(model=args.model or "mimo-v2.5-pro")
         else:
             from .brain.deepseek import OpenAIBrain
             brain = OpenAIBrain(model=args.model or "gpt-4o")
