@@ -223,6 +223,57 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
     registry.register(_list_artifacts_tool(store))
     registry.register(_run_python_snippet_sandbox_tool(store))
     registry.register(_extract_arrays_from_decompile_tool(store))
+
+    # v0.7.0: Packer tools (hana fix)
+    from .tools_packer import (
+        tool_detect_packer, tool_repair_upx_sections, tool_unpack_upx,
+    )
+    registry.register(ToolSpec(
+        name="detect_packer", description="Detect UPX/VMP/generic packer signals.",
+        input_schema={"type": "object", "properties": {"sample_path": {"type": "string"}},
+                       "required": ["sample_path"], "additionalProperties": False},
+        handler=tool_detect_packer, risk="read_only",
+    ))
+    registry.register(ToolSpec(
+        name="repair_upx_sections", description="Repair VMP0/VMP1 to UPX0/UPX1 sections.",
+        input_schema={"type": "object", "properties": {
+            "sample_path": {"type": "string"}, "output_dir": {"type": "string"}},
+            "required": ["sample_path"], "additionalProperties": False},
+        handler=tool_repair_upx_sections, risk="read_only",
+    ))
+    registry.register(ToolSpec(
+        name="unpack_upx", description="UPX decompression, return unpacked artifact.",
+        input_schema={"type": "object", "properties": {
+            "sample_path": {"type": "string"}, "output_dir": {"type": "string"},
+            "timeout": {"type": "integer", "default": 30}},
+            "required": ["sample_path"], "additionalProperties": False},
+        handler=tool_unpack_upx, risk="read_only",
+    ))
+
+    # v0.7.0: Crypto recipe tool
+    from .tools_crypto import tool_crypto_recipe
+    registry.register(ToolSpec(
+        name="crypto_recipe", description="Execute RC4/XOR crypto recipe, return candidates.",
+        input_schema={"type": "object", "properties": {
+            "algorithm": {"type": "string"}, "key": {"type": "string"},
+            "key_encoding": {"type": "string", "default": "utf8"},
+            "ciphertext_hex": {"type": "string"}},
+            "required": ["algorithm", "key", "ciphertext_hex"],
+            "additionalProperties": False},
+        handler=tool_crypto_recipe, risk="read_only",
+    ))
+
+    # v0.7.0: E-language detection
+    from .tools_elang import tool_detect_e_language
+    registry.register(ToolSpec(
+        name="detect_e_language", description="Detect E-language / 易语言 runtime hints.",
+        input_schema={"type": "object", "properties": {
+            "sample_path": {"type": "string"},
+            "strings": {"type": "array", "default": []},
+            "imports": {"type": "array", "default": []}},
+            "additionalProperties": False},
+        handler=tool_detect_e_language, risk="read_only",
+    ))
     return registry
 
 
