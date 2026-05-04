@@ -55,25 +55,12 @@ class LLMReverseRuntime:
                 state.setdefault("observations", []).append(obs.model_dump())
                 action_count += 1
 
-                # AUTO-VALIDATE: every candidate must go through validator
-                if action.requires_validation and obs.candidates:
-                    for cand in obs.candidates:
-                        vr_obs = self._validate_candidate(
-                            state,
-                            {"candidate": cand.get("value"),
-                             "source": cand.get("source", action.name or "")},
-                        )
-                        state.setdefault("observations", []).append(vr_obs.model_dump())
+                validation_obs = self._validate_observation_candidates(state, action, obs)
+                if validation_obs:
+                    state.setdefault("observations", []).append(validation_obs.model_dump())
 
-                        for vc in vr_obs.candidates:
-                            if vc.get("accepted"):
-                                state["solved"] = True
-                                state["winning_candidate"] = vc
-                                return state
-                else:
-                    # Only accept pre-verified if requires_validation=False
-                    for cand in obs.candidates:
-                        if cand.get("verified") or cand.get("accepted"):
+                    for cand in validation_obs.candidates:
+                        if cand.get("accepted"):
                             state["solved"] = True
                             state["winning_candidate"] = cand
                             return state
@@ -173,8 +160,53 @@ class LLMReverseRuntime:
             return RuntimeObservation(tool=name, status="error",
                 summary=f"{name} failed: {e}", error=str(e))
 
-    def _validate_candidate(self, state: dict, params: dict) -> "RuntimeObservation":
-        from ..core.observation import RuntimeObservation
+    def _validate_observation_candidates(self, state: dict, action, obs):
+        """Plan §3.1: ALL candidates must go through validator. Only accepted -> solved."""
+        if not obs.candidates:
+            return None
+        if self.policy.test_mode_allow_unverified and not getattr(action, "requires_validation", True):
+            return None
+
+        accepted = []
+        validations = []
+
+        for cand in obs.candidates:
+            value = cand.get("value") or cand.get("candidate")
+            if not value:
+                continue
+
+            vr_obs = self._validate_candidate(
+                state,
+                {"candidate": value,
+                 "source": cand.get("source", obs.tool)},
+            )
+            state.setdefault("observations", []).append(vr_obs.model_dump())
+            validations.append(vr_obs.model_dump())
+
+            for validated in vr_obs.candidates:
+                if validated.get("accepted"):
+                    merged = dict(cand)
+                    merged.update(validated)
+                    accepted.append(merged)
+
+        if accepted:
+            return RuntimeObservation(
+                tool="candidate_validation",
+                status="ok",
+                summary=f"{len(accepted)} candidate(s) accepted by validator",
+                structured={"validations": validations},
+                candidates=accepted,
+                risk="executes_sample",
+            )
+
+        return RuntimeObservation(
+            tool="candidate_validation",
+            status="ok",
+            summary="No candidate accepted by validator",
+            structured={"validations": validations},
+            candidates=[],
+            risk="executes_sample",
+        )
         candidate = params.get("candidate") or params.get("value", "")
         if not candidate:
             return RuntimeObservation(tool="validate_candidate", status="skipped",

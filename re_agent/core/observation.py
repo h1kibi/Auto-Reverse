@@ -27,14 +27,24 @@ class RuntimeObservation(BaseModel):
 
 def normalize_tool_result(tool_name: str, raw: dict) -> RuntimeObservation:
     """Convert existing tool output dict to RuntimeObservation (no rewriting needed)."""
+    status = raw.get("status")
+    if not status:
+        if raw.get("error") or raw.get("ok") is False:
+            status = "error"
+        elif raw.get("ok", True):
+            status = "ok"
+        else:
+            status = "error"
+
     return RuntimeObservation(
         tool=tool_name,
-        status=raw.get("status", "ok"),
+        status=status,
         summary=raw.get("summary", ""),
         structured=raw.get("structured", raw.get("data", {})),
         artifacts=raw.get("artifacts", []),
         evidence_ids=raw.get("evidence_ids", []),
         candidates=raw.get("candidates", []),
         risk=raw.get("risk", "read_only"),
+        elapsed_ms=raw.get("elapsed_ms"),
         error=raw.get("error"),
     )

@@ -8,7 +8,6 @@ Strategy:
 4. Rerank by evidence overlap
 """
 
-import re
 from typing import Any
 
 from .schema import Playbook, SelfLesson
@@ -29,9 +28,6 @@ class MemoryRetriever:
         comparison_hints = profile_dict.get("comparison_hints", [])
         crypto_hints = profile_dict.get("crypto_hints", [])
         encoding_hints = profile_dict.get("encoding_hints", [])
-        success_strings = profile_dict.get("success_strings", [])
-        failure_strings = profile_dict.get("failure_strings", [])
-        file_type = profile_dict.get("file_type", "")
 
         # Build query signal list
         query_signals = set()
@@ -95,6 +91,12 @@ class MemoryRetriever:
         score += signal_overlap * 0.25
         score += tag_overlap * 0.15
         score += pb.confidence * 0.1
+
+        # User playbook priority (plan §6.2)
+        if getattr(pb, "source_name", "") == "user":
+            score += 0.15
+        priority = getattr(pb, "confidence", 0.5)  # Use confidence as priority proxy
+        score += min(priority, 1.0) * 0.1
 
         return min(score, 1.0)
 

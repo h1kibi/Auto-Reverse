@@ -13,6 +13,7 @@ class RuntimePolicy(BaseModel):
     allow_dynamic: bool = False
     allow_mutation: bool = False
     allow_raw_commands: bool = False
+    test_mode_allow_unverified: bool = False
     max_steps: int = 5
     max_actions_per_step: int = 2
 

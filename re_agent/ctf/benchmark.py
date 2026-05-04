@@ -135,9 +135,51 @@ def _run_auto_no_brain(binary: Path, expected: dict) -> dict:
 
 
 def _run_auto_brain(binary: Path, expected: dict, brain_name: str) -> dict:
-    """Run LLM-brain solve"""
-    # Placeholder - requires real LLM API access
-    return {"verified": False, "method": "brain_not_configured", "tokens": 0, "flagged_but_wrong": False}
+    """Run llm-solve programmatically via LLMReverseRuntime."""
+    try:
+        from re_agent.ctf.llm_runtime import LLMReverseRuntime
+        from re_agent.brain.context_builder import BrainContextBuilder
+        from re_agent.brain.policy import RuntimePolicy
+
+        brain = _get_brain(brain_name)
+        builder = BrainContextBuilder(token_budget=4096)
+        policy = RuntimePolicy(allow_dynamic=True, max_steps=3)
+
+        out = binary.parent / "bench_out"
+        out.mkdir(parents=True, exist_ok=True)
+
+        runtime = LLMReverseRuntime(brain=brain, tool_executor=None,
+                                     context_builder=builder, max_steps=3,
+                                     policy=policy)
+        state = {
+            "run_id": "bench", "sample_path": str(binary),
+            "output_dir": str(out), "profile": None,
+            "evidence_brief": {}, "memory_hits": [],
+            "context_bundles": [], "observations": [],
+            "budget_seconds": expected.get("max_seconds", 60),
+        }
+        result = runtime.run(state)
+        solved = result.get("solved", False)
+        return {
+            "verified": solved,
+            "method": result.get("winning_candidate", {}).get("source", "auto_brain"),
+            "tokens": sum(
+                e.get("context", {}).get("estimated_tokens", 0)
+                for e in result.get("llm_trace", [])
+            ),
+            "flagged_but_wrong": False,
+        }
+    except Exception as e:
+        return {"verified": False, "method": f"brain_error:{e}", "tokens": 0, "flagged_but_wrong": False}
+
+
+def _get_brain(name: str):
+    if name == "deepseek":
+        from re_agent.brain.deepseek import DeepSeekBrain
+        return DeepSeekBrain()
+    else:
+        from re_agent.brain.deepseek import OpenAIBrain
+        return OpenAIBrain()
 
 
 def _find_binary(challenge_dir: Path) -> Path | None:
