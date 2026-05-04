@@ -159,6 +159,8 @@ class ToolExecutor:
 
     def execute(self, tool_name: str, arguments: JsonDict) -> JsonDict:
         started = time.time()
+        arguments = dict(arguments or {})
+        arguments.setdefault("output_dir", str(self.store.path("tools")))
         safe_args = redact_tool_args(arguments) if arguments else arguments
 
         try:
@@ -263,8 +265,8 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
         handler=tool_crypto_recipe, risk="read_only",
     ))
 
-    # v0.7.0: E-language detection
-    from .tools_elang import tool_detect_e_language
+    # v0.7.0: E-language detection + bytearray extraction
+    from .tools_elang import tool_detect_e_language, tool_extract_e_bytearray
     registry.register(ToolSpec(
         name="detect_e_language", description="Detect E-language / 易语言 runtime hints.",
         input_schema={"type": "object", "properties": {
@@ -273,6 +275,14 @@ def build_default_ctf_registry(store: ArtifactStore) -> ToolRegistry:
             "imports": {"type": "array", "default": []}},
             "additionalProperties": False},
         handler=tool_detect_e_language, risk="read_only",
+    ))
+    registry.register(ToolSpec(
+        name="extract_e_bytearray",
+        description="Extract E-language bytearray: int unknown; int length; char* bytes.",
+        input_schema={"type": "object", "properties": {
+            "sample_path": {"type": "string"}, "address": {"type": "string"}},
+            "required": ["sample_path", "address"], "additionalProperties": False},
+        handler=tool_extract_e_bytearray, risk="read_only",
     ))
     return registry
 

@@ -28,10 +28,11 @@ def tool_detect_e_language(args: dict) -> dict:
     if sample_path:
         try:
             data = Path(sample_path).read_bytes()[:2_000_000]
-            for token in ["加密数据".encode("gbk", errors="ignore"),
-                           "字节集".encode("gbk", errors="ignore")]:
-                if token and token in data:
-                    hints.append("gbk:e_language_token")
+            for token in ["加密数据", "字节集", "到字节集", "到文本"]:
+                for enc in ["gbk", "utf-16le"]:
+                    raw = token.encode(enc, errors="ignore")
+                    if raw and raw in data:
+                        hints.append(f"{enc}:{token}")
         except Exception:
             pass
 
@@ -42,3 +43,42 @@ def tool_detect_e_language(args: dict) -> dict:
         structured={"is_e_language": is_e, "hints": hints},
         risk="read_only", token_hint=100,
     ).model_dump()
+
+
+def tool_extract_e_bytearray(args: dict) -> dict:
+    sample = Path(args.get("sample_path", ""))
+    address = args.get("address")
+    if not address:
+        return RuntimeObservation(
+            tool="extract_e_bytearray", status="skipped",
+            summary="No E-language bytearray address provided.", risk="read_only",
+        ).model_dump()
+    try:
+        import pefile
+        pe = pefile.PE(str(sample), fast_load=False)
+        struct_va = int(str(address), 0)
+        image_base = pe.OPTIONAL_HEADER.ImageBase
+        rva = struct_va - image_base
+        off = pe.get_offset_from_rva(rva)
+        length = int.from_bytes(pe.__data__[off + 4: off + 8], "little")
+        data_va = int.from_bytes(pe.__data__[off + 8: off + 12], "little")
+        if length <= 0 or length > 8192:
+            raise ValueError(f"unreasonable length: {length}")
+        rva2 = data_va - image_base
+        off2 = pe.get_offset_from_rva(rva2)
+        data = pe.__data__[off2: off2 + length]
+
+        return RuntimeObservation(
+            tool="extract_e_bytearray", status="ok",
+            summary=f"Extracted E-language bytearray length={length} at {hex(struct_va)}.",
+            structured={
+                "struct_va": hex(struct_va), "length": length, "data_va": hex(data_va),
+                "data_hex": data.hex().upper(), "ascii_preview": data[:64].decode("latin1", errors="replace"),
+            },
+            evidence_ids=[f"e_bytearray:{hex(struct_va)}"], risk="read_only", token_hint=120,
+        ).model_dump()
+    except Exception as exc:
+        return RuntimeObservation(
+            tool="extract_e_bytearray", status="error",
+            summary=f"Extraction failed: {exc}", error=str(exc), risk="read_only",
+        ).model_dump()
