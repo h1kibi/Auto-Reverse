@@ -82,3 +82,35 @@ def tool_extract_e_bytearray(args: dict) -> dict:
             tool="extract_e_bytearray", status="error",
             summary=f"Extraction failed: {exc}", error=str(exc), risk="read_only",
         ).model_dump()
+
+
+def tool_decode_e_bytearray_candidates(args: dict) -> dict:
+    data_hex = args.get("data_hex") or args.get("hex", "")
+    if not data_hex:
+        return RuntimeObservation(
+            tool="decode_e_bytearray_candidates", status="skipped",
+            summary="No hex data provided.", risk="read_only",
+        ).model_dump()
+    data = bytes.fromhex(data_hex)
+    candidates = []
+    for enc in ("gbk", "utf-16le", "utf-8"):
+        try:
+            s = data.decode(enc)
+            if len(s) >= 4 and any(c.isalpha() for c in s):
+                candidates.append({"kind": enc, "value": s[:300], "confidence": 0.6})
+        except UnicodeDecodeError:
+            pass
+    for key in range(256):
+        x = bytes(b ^ key for b in data)
+        pr = sum(32 <= c <= 126 or c in (9, 10, 13) for c in x) / max(len(x), 1)
+        if pr > 0.85:
+            candidates.append({"kind": "xor1", "key": key,
+                               "value": x.decode("latin1", errors="replace")[:300],
+                               "confidence": 0.5})
+    return RuntimeObservation(
+        tool="decode_e_bytearray_candidates", status="ok",
+        summary=f"Decoded {len(candidates)} candidate views.",
+        structured={"candidates": candidates[:50]},
+        candidates=candidates[:10],
+        risk="read_only", token_hint=180,
+    ).model_dump()

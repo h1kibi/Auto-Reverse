@@ -160,7 +160,10 @@ class ToolExecutor:
     def execute(self, tool_name: str, arguments: JsonDict) -> JsonDict:
         started = time.time()
         arguments = dict(arguments or {})
-        arguments.setdefault("output_dir", str(self.store.path("tools")))
+        spec = self.registry.get(tool_name)
+        props = (spec.input_schema or {}).get("properties", {})
+        if "output_dir" in props:
+            arguments.setdefault("output_dir", str(self.store.path("tools")))
         safe_args = redact_tool_args(arguments) if arguments else arguments
 
         try:

@@ -29,6 +29,12 @@ class ToolSpec:
     default_timeout: int = 30
     requires_confirmation: bool = False
     handler: Any = None  # optional: for ctf/tools.py registry usage
+    category: str = "generic"
+    consumes: list[str] = field(default_factory=list)
+    produces: list[str] = field(default_factory=list)
+    preconditions: list[str] = field(default_factory=list)
+    token_hint: int = 200
+    cost_hint: float = 1.0
 
     @property
     def is_read_only(self) -> bool:
