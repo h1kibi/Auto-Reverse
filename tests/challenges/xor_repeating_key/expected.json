@@ -1,0 +1,1 @@
+{"expected_flag":"flag{xor_rep}","input_channel":"stdin","allowed_solvers":["encoding","z3_extractor","dynamic_trace"],"must_verify":true,"max_seconds":60,"tags":["xor","repeating_key","stdin"]}

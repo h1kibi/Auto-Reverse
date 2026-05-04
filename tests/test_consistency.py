@@ -7,6 +7,24 @@ from pathlib import Path
 from re_agent.ctf.validator import RedactionMode, redact_candidate
 
 
+def test_api_solve_request_redact_defaults_true():
+    """API SolveRequest.redact defaults to True (safer for remote)"""
+    from re_agent.api.schemas import SolveRequest
+    req = SolveRequest(sample_path="/tmp/test")
+    assert req.redact is True
+
+
+def test_api_solve_response_has_new_fields():
+    """SolveResponse includes run_id/report_path/trace_path"""
+    from re_agent.api.schemas import SolveResponse
+    r = SolveResponse(status="ok", sample_sha256="a" * 64, solved=True,
+                       run_id="test_run", report_path="/tmp/report.md",
+                       trace_path="/tmp/trace.jsonl")
+    assert r.run_id == "test_run"
+    assert r.report_path == "/tmp/report.md"
+    assert r.trace_path == "/tmp/trace.jsonl"
+
+
 def test_r2_decompile_calls_target_validator(monkeypatch, tmp_path):
     """R2Backend.decompile() actually calls validate_r2_target"""
     from re_agent.tools import backend

@@ -1,0 +1,1 @@
+{"expected_flag":"ab01cd23","input_channel":"stdin","allowed_solvers":["z3_extractor","z3_constraints"],"must_verify":true,"max_seconds":60,"tags":["z3","interbyte","stdin"]}

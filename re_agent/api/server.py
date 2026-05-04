@@ -26,10 +26,9 @@ from ..analyzer import FunctionAnalyzer
 from ..qa import QASystem
 from ..llm import LLMFactory
 from ..artifacts import compute_sha256, sample_artifact_dir, sample_upload_path, safe_filename
-from ..ctf.validator import redact_candidate, RedactionMode
 from .schemas import (
     AnalyzeRequest, SolveRequest, AnalyzeResponse, SolveResponse,
-    AskRequest, AskResponse, MemorySearchRequest, MemorySearchResponse,
+    AskRequest, AskResponse,
 )
 
 app = FastAPI(
@@ -211,34 +210,47 @@ async def get_report(sha256: str):
 async def solve_sample(request: SolveRequest):
     """CTF 求解"""
     from ..ctf.pipeline import solve_challenge
+    from ..ctf.solve_config import SolveConfig
     from ..artifacts import compute_sha256, sample_artifact_dir
 
     sample = Path(request.sample_path)
     if not sample.exists():
         raise HTTPException(status_code=404, detail="Sample not found")
 
+    sha256 = compute_sha256(sample)
+    output_dir = sample_artifact_dir(RESULT_ROOT, sha256)
+
     try:
-        sha256 = compute_sha256(sample)
-        output_dir = sample_artifact_dir(RESULT_ROOT, sha256)
+        config = SolveConfig(
+            flag_regex=request.flag_regex,
+            skip_ghidra=request.skip_ghidra,
+            max_total_seconds=request.timeout,
+            verify=request.do_verify,
+            enable_memory=request.enable_memory,
+            enable_llm_planner=request.enable_llm_planner,
+            redact_candidates_in_logs=request.redact,
+        )
 
         result = solve_challenge(
             sample_path=str(sample),
             output_dir=str(output_dir),
             flag_regex=request.flag_regex,
-            skip_ghidra=request.skip_ghidra,
-            timeout=request.timeout,
-            validate=request.do_verify,
+            config=config,
         )
 
+        run_id = Path(result.result_path).parent.name if result.result_path else ""
         return SolveResponse(
             status=result.status,
             sample_sha256=result.sha256,
-            flag=redact_candidate(result.best_flag or "", RedactionMode.LOGS) if request.redact else result.best_flag,
+            flag=result.best_flag,
             method=result.method,
             solved=result.verified,
             candidates_count=len(result.candidates),
             summary=result.summary,
             result_path=result.result_path or "",
+            run_id=run_id,
+            report_path=str(Path(result.result_path).parent / "report.md") if result.result_path else "",
+            trace_path=str(Path(result.result_path).parent / "solve_trace.jsonl") if result.result_path else "",
         )
 
     except Exception as e:
