@@ -56,11 +56,6 @@ class AskResponse(BaseModel):
     answer: str
 
 
-class AskResponse(BaseModel):
-    question: str
-    answer: str
-
-
 class MemorySearchRequest(BaseModel):
     query: str
     limit: int = Field(default=10, ge=1, le=50)

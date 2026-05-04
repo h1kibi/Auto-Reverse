@@ -158,6 +158,7 @@ class ToolExecutor:
 
     def execute(self, tool_name: str, arguments: JsonDict) -> JsonDict:
         started = time.time()
+        safe_args = redact_tool_args(arguments) if arguments else arguments
 
         try:
             spec = self.registry.get(tool_name)
@@ -169,7 +170,7 @@ class ToolExecutor:
                 {
                     "event": "tool_result",
                     "tool": tool_name,
-                    "arguments": arguments,
+                    "arguments": safe_args,
                     "elapsed_ms": elapsed_ms,
                     "ok": True,
                     "summary": result.get("summary", ""),
@@ -192,7 +193,7 @@ class ToolExecutor:
                 {
                     "event": "tool_error",
                     "tool": tool_name,
-                    "arguments": arguments,
+                    "arguments": safe_args,
                     "elapsed_ms": elapsed_ms,
                     "ok": False,
                     "error": str(e),

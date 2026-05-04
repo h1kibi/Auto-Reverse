@@ -88,8 +88,9 @@ def solve_challenge(
     evidence = EvidenceGraph.from_analysis(analysis)
     (out / "profile.json").write_text(json.dumps(
         _profile_dict(profile), ensure_ascii=False, indent=2), encoding="utf-8")
+    from ..version import __version__
     (out / "config_dump.json").write_text(json.dumps({
-        "version": "0.5.3",
+        "version": __version__,
         "flag_regex": config.flag_regex, "skip_ghidra": config.skip_ghidra,
         "max_total_seconds": config.max_total_seconds, "max_solver_seconds": config.max_solver_seconds,
         "enable_dynamic": config.enable_dynamic, "enable_angr": config.enable_angr,

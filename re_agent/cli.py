@@ -535,6 +535,8 @@ def cmd_memory(args):
         return _cmd_memory_list(args, db_path)
     elif action == "show":
         return _cmd_memory_show(args, db_path)
+    elif action == "add-playbook":
+        return _cmd_memory_add_playbook(args, db_path)
     else:
         print(f"Unknown memory action: {action}")
         return 1
@@ -686,6 +688,129 @@ def _cmd_memory_show(args, db_path):
         print(f"Error: {e}")
         return 1
     return 0
+
+
+def _cmd_memory_add_playbook(args, db_path):
+    from pathlib import Path
+    from .memory.store import MemoryStore
+    from .memory.playbook_import import parse_playbook_markdown
+    path = Path(args.path)
+    if not path.exists():
+        print(f"File not found: {path}"); return 1
+    try:
+        store = MemoryStore(db_path)
+        pb = parse_playbook_markdown(path)
+        store.add_playbook(pb)
+        store.close()
+        print(f"Added playbook: {pb.title} (id={pb.id})")
+        print(f"  Tags: {pb.pattern_tags}")
+        print(f"  Signals: {pb.signals[:5]}")
+        print(f"  Steps: {len(pb.tactic_steps)}")
+    except Exception as e:
+        print(f"Error: {e}"); return 1
+    return 0
+
+
+def cmd_llm_solve(args):
+    """LLM Brain 驱动实验性求解"""
+    import json
+    from pathlib import Path
+    from .artifacts import compute_sha256, sample_artifact_dir
+    from .ctf.pipeline import run_analysis
+    from .ctf.profiler import build_profile
+    from .core.evidence import EvidenceGraph
+    from .ctf.context_bundle import build_evidence_brief
+    from .ctf.llm_runtime import LLMReverseRuntime
+    from .brain.context_builder import BrainContextBuilder
+    from .brain.policy import RuntimePolicy
+
+    sample = Path(args.sample).resolve()
+    if not sample.exists():
+        print(f"Error: Sample not found: {sample}"); return 1
+
+    sha256 = compute_sha256(sample)
+    output_dir = Path(args.output) if args.output else sample_artifact_dir("artifacts/results", sha256)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"{'='*60}")
+    print(f"Auto-Reverse LLM Brain Solve")
+    print(f"{'='*60}")
+    print(f"Sample: {sample}")
+    print(f"Brain: {args.brain}")
+    print(f"Max steps: {args.max_steps}")
+    print(f"Output: {output_dir}")
+    print(f"{'='*60}")
+
+    # Pre-pass (no LLM tokens)
+    analysis = run_analysis(sample_path=str(sample), output_dir=str(output_dir), skip_ghidra=True)
+    profile = build_profile(analysis)
+    evidence = EvidenceGraph.from_analysis(analysis)
+    evidence_brief = build_evidence_brief(profile)
+
+    # Memory
+    memory_hits = []
+    try:
+        from .memory.store import MemoryStore
+        from .memory.retriever import MemoryRetriever
+        store = MemoryStore("memory.db")
+        retriever = MemoryRetriever(store)
+        memory_hits = retriever.retrieve_for_profile({
+            "tags": profile.tags, "comparison_hints": profile.comparison_hints,
+            "encoding_hints": profile.encoding_hints, "crypto_hints": profile.crypto_hints,
+        }, top_k=3)
+        store.close()
+    except Exception:
+        pass
+
+    # Brain
+    try:
+        if args.brain == "deepseek":
+            from .brain.deepseek import DeepSeekBrain
+            brain = DeepSeekBrain(model=args.model or "deepseek-chat")
+        else:
+            from .brain.deepseek import OpenAIBrain
+            brain = OpenAIBrain(model=args.model or "gpt-4o")
+    except Exception as e:
+        print(f"Error initializing brain: {e}")
+        print("Set DEEPSEEK_API_KEY or OPENAI_API_KEY")
+        return 1
+
+    # Runtime
+    policy = RuntimePolicy(allow_dynamic=args.allow_dynamic, max_steps=args.max_steps)
+    builder = BrainContextBuilder(token_budget=4096)
+    runtime = LLMReverseRuntime(brain=brain, tool_executor=None,
+                                 context_builder=builder, max_steps=args.max_steps,
+                                 policy=policy)
+
+    state = {
+        "run_id": output_dir.name, "sample_path": str(sample),
+        "output_dir": str(output_dir),
+        "profile": profile, "evidence_brief": evidence_brief.model_dump(),
+        "memory_hits": memory_hits, "context_bundles": [],
+        "observations": [], "budget_seconds": 300,
+    }
+
+    print("\nRunning LLM Brain loop...\n")
+    result_state = runtime.run(state)
+
+    trace_path = output_dir / "llm_trace.jsonl"
+    with trace_path.open("w", encoding="utf-8") as f:
+        for entry in result_state.get("llm_trace", []):
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    solved = result_state.get("solved", False)
+    winning = result_state.get("winning_candidate", {})
+    print(f"\n{'='*60}")
+    print(f"LLM Solve: {'SOLVED' if solved else 'NOT SOLVED'}")
+    print(f"{'='*60}")
+    if winning:
+        print(f"Candidate: {winning.get('value', '?')[:80]}")
+    print(f"Steps: {len(result_state.get('llm_trace', []))}")
+    print(f"Observations: {len(result_state.get('observations', []))}")
+    print(f"Trace: {trace_path}")
+    print(f"{'='*60}")
+
+    return 0 if solved else 2
 
 
 def main():
@@ -1014,6 +1139,20 @@ def main():
         help="最大工具调用轮数",
     )
 
+    # ========== llm-solve 命令 ==========
+    llm_parser = subparsers.add_parser(
+        "llm-solve",
+        help="LLM Brain 驱动实验性求解（不破坏现有 solve）",
+    )
+    llm_parser.add_argument("sample", help="挑战文件路径")
+    llm_parser.add_argument("--brain", default="deepseek", help="Brain 后端 (deepseek/openai)")
+    llm_parser.add_argument("--model", default=None, help="模型名")
+    llm_parser.add_argument("--verify", action="store_true", default=True)
+    llm_parser.add_argument("--max-steps", type=int, default=5)
+    llm_parser.add_argument("--allow-dynamic", action="store_true", help="允许动态执行工具")
+    llm_parser.add_argument("-o", "--output", help="输出目录")
+    llm_parser.add_argument("--flag-regex", default=r"flag\{[^}]+\}")
+
     # ========== memory 命令组 ==========
     memory_parser = subparsers.add_parser(
         "memory",
@@ -1039,11 +1178,16 @@ def main():
     stats_parser = memory_sub.add_parser("stats", help="记忆统计")
     stats_parser.add_argument("--db", default="memory.db", help="数据库路径")
 
-    # memory reflect
+    #     memory reflect
     reflect_parser = memory_sub.add_parser("reflect", help="从求解 trace 生成 SelfLesson")
     reflect_parser.add_argument("sha256", help="样本 SHA256")
     reflect_parser.add_argument("--solver", default="", help="获胜 solver")
     reflect_parser.add_argument("--db", default="memory.db", help="数据库路径")
+
+    # memory add-playbook
+    addpb_parser = memory_sub.add_parser("add-playbook", help="导入 Markdown 经验为 Playbook")
+    addpb_parser.add_argument("path", help="Markdown 文件路径")
+    addpb_parser.add_argument("--db", default="memory.db", help="数据库路径")
 
     # memory list
     list_parser = memory_sub.add_parser("list", help="列出记忆条目")
@@ -1082,6 +1226,8 @@ def main():
         return cmd_serve(args)
     elif args.command == "memory":
         return cmd_memory(args)
+    elif args.command == "llm-solve":
+        return cmd_llm_solve(args)
 
     return 0
 
