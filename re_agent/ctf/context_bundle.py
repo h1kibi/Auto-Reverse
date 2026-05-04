@@ -12,6 +12,7 @@ from pathlib import Path
 
 class EvidenceBrief(BaseModel):
     """Global binary summary (cheap for LLM round 1)."""
+
     file_type: str = ""
     arch: str = ""
     bits: int | None = None
@@ -28,6 +29,7 @@ class EvidenceBrief(BaseModel):
 
 class FunctionContextBundle(BaseModel):
     """Low-token evidence bundle for a single function."""
+
     function: str
     address: str = ""
     role_guess: str | None = None
@@ -63,15 +65,15 @@ def build_evidence_brief(profile) -> EvidenceBrief:
     )
 
 
-def build_context_bundle(function: str, profile, evidence, artifact_root: Path,
-                         max_excerpt_chars: int = 6000) -> FunctionContextBundle:
+def build_context_bundle(
+    function: str, profile, evidence, artifact_root: Path, max_excerpt_chars: int = 6000
+) -> FunctionContextBundle:
     """Build a FunctionContextBundle from existing profiling/evidence data."""
     decomp = _find_decompile_excerpt(artifact_root, function, max_excerpt_chars)
     ref_strs, imports, constants, recommended = [], [], [], []
 
     if profile is not None:
-        for s in (getattr(profile, "success_strings", []) +
-                  getattr(profile, "failure_strings", [])):
+        for s in getattr(profile, "success_strings", []) + getattr(profile, "failure_strings", []):
             if s and s in decomp:
                 ref_strs.append(s)
         for s in getattr(profile, "strings", [])[:50]:
@@ -86,6 +88,7 @@ def build_context_bundle(function: str, profile, evidence, artifact_root: Path,
                     break
 
     import re
+
     constants = list(set(re.findall(r"0x[0-9a-fA-F]{2,8}", decomp)))[:20]
 
     if profile is not None:

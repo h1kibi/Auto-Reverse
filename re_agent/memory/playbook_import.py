@@ -43,7 +43,11 @@ def parse_playbook_markdown(path: Path) -> Playbook:
             text = parts[2]
 
     sections = _split_sections(text)
-    title = frontmatter.get("title") or _first_heading(text) or path.stem.replace("_", " ").replace("-", " ")
+    title = (
+        frontmatter.get("title")
+        or _first_heading(text)
+        or path.stem.replace("_", " ").replace("-", " ")
+    )
     safe_id = re.sub(r"[^a-z0-9_]", "_", title.lower())[:50]
 
     return Playbook(
@@ -89,8 +93,22 @@ def _first_heading(text: str) -> str | None:
 def _infer_tags(text: str) -> list[str]:
     tags = []
     low = text.lower()
-    for tag in ["z3", "angr", "xor", "base64", "strcmp", "memcmp", "upx",
-                 "anti_debug", "elf", "pe", "go", "rust", "stdin", "argv"]:
+    for tag in [
+        "z3",
+        "angr",
+        "xor",
+        "base64",
+        "strcmp",
+        "memcmp",
+        "upx",
+        "anti_debug",
+        "elf",
+        "pe",
+        "go",
+        "rust",
+        "stdin",
+        "argv",
+    ]:
         if tag in low:
             tags.append(tag)
     return tags
@@ -118,10 +136,11 @@ def _parse_tool_list(text: str) -> list[dict]:
     """Parse tool recipe: either JSON block or bulleted key: value pairs."""
     try:
         import json
+
         start = text.find("[")
         end = text.rfind("]")
         if start >= 0 and end > start:
-            return json.loads(text[start:end + 1])
+            return json.loads(text[start : end + 1])
     except Exception:
         pass
     # Fallback: parse bulleted list

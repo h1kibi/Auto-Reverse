@@ -12,8 +12,7 @@ from .actions import BrainResult
 class Brain(Protocol):
     name: str
 
-    def plan(self, ctx: BrainContext) -> BrainResult:
-        ...
+    def plan(self, ctx: BrainContext) -> BrainResult: ...
 
 
 def parse_brain_result(raw: str) -> BrainResult:

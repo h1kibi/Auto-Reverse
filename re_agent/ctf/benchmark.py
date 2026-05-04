@@ -50,7 +50,8 @@ def run_benchmark(modes: list[str] | None = None, brain_name: str = "deepseek") 
         results["comparison"] = {
             "verified_delta": ab["verified"] - nb["verified"],
             "false_positive_delta": ab["false_positive"] - nb["false_positive"],
-            "avg_token_reduction_vs_llm_only": results.get("llm-only", {}).get("avg_tokens", 0) - ab.get("avg_tokens", 0),
+            "avg_token_reduction_vs_llm_only": results.get("llm-only", {}).get("avg_tokens", 0)
+            - ab.get("avg_tokens", 0),
         }
 
     return results
@@ -148,14 +149,18 @@ def _run_auto_brain(binary: Path, expected: dict, brain_name: str) -> dict:
         out = binary.parent / "bench_out"
         out.mkdir(parents=True, exist_ok=True)
 
-        runtime = LLMReverseRuntime(brain=brain, tool_executor=None,
-                                     context_builder=builder, max_steps=3,
-                                     policy=policy)
+        runtime = LLMReverseRuntime(
+            brain=brain, tool_executor=None, context_builder=builder, max_steps=3, policy=policy
+        )
         state = {
-            "run_id": "bench", "sample_path": str(binary),
-            "output_dir": str(out), "profile": None,
-            "evidence_brief": {}, "memory_hits": [],
-            "context_bundles": [], "observations": [],
+            "run_id": "bench",
+            "sample_path": str(binary),
+            "output_dir": str(out),
+            "profile": None,
+            "evidence_brief": {},
+            "memory_hits": [],
+            "context_bundles": [],
+            "observations": [],
             "budget_seconds": expected.get("max_seconds", 60),
         }
         result = runtime.run(state)
@@ -164,21 +169,27 @@ def _run_auto_brain(binary: Path, expected: dict, brain_name: str) -> dict:
             "verified": solved,
             "method": result.get("winning_candidate", {}).get("source", "auto_brain"),
             "tokens": sum(
-                e.get("context", {}).get("estimated_tokens", 0)
-                for e in result.get("llm_trace", [])
+                e.get("context", {}).get("estimated_tokens", 0) for e in result.get("llm_trace", [])
             ),
             "flagged_but_wrong": False,
         }
     except Exception as e:
-        return {"verified": False, "method": f"brain_error:{e}", "tokens": 0, "flagged_but_wrong": False}
+        return {
+            "verified": False,
+            "method": f"brain_error:{e}",
+            "tokens": 0,
+            "flagged_but_wrong": False,
+        }
 
 
 def _get_brain(name: str):
     if name == "deepseek":
         from re_agent.brain.deepseek import DeepSeekBrain
+
         return DeepSeekBrain()
     else:
         from re_agent.brain.deepseek import OpenAIBrain
+
         return OpenAIBrain()
 
 
@@ -197,9 +208,9 @@ def _find_binary(challenge_dir: Path) -> Path | None:
 
 def print_benchmark_report(results: dict) -> None:
     """Print formatted comparison table."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("Auto-Reverse Three-Mode Benchmark")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     header = f"{'Metric':<30} {'llm-only':>10} {'no-brain':>10} {'brain':>10}"
     print(header)
@@ -210,10 +221,30 @@ def print_benchmark_report(results: dict) -> None:
     ab = results.get("auto-brain", {})
 
     rows = [
-        ("Verified solve rate", llm.get("verified", "N/A"), nb.get("verified", 0), ab.get("verified", 0)),
-        ("False positives", llm.get("false_positive", "N/A"), nb.get("false_positive", 0), ab.get("false_positive", 0)),
-        ("Avg tokens", llm.get("avg_tokens", "N/A"), nb.get("avg_tokens", 0), ab.get("avg_tokens", 0)),
-        ("Avg seconds", llm.get("avg_seconds", "N/A"), f"{nb.get('avg_seconds', 0):.1f}", f"{ab.get('avg_seconds', 0):.1f}"),
+        (
+            "Verified solve rate",
+            llm.get("verified", "N/A"),
+            nb.get("verified", 0),
+            ab.get("verified", 0),
+        ),
+        (
+            "False positives",
+            llm.get("false_positive", "N/A"),
+            nb.get("false_positive", 0),
+            ab.get("false_positive", 0),
+        ),
+        (
+            "Avg tokens",
+            llm.get("avg_tokens", "N/A"),
+            nb.get("avg_tokens", 0),
+            ab.get("avg_tokens", 0),
+        ),
+        (
+            "Avg seconds",
+            llm.get("avg_seconds", "N/A"),
+            f"{nb.get('avg_seconds', 0):.1f}",
+            f"{ab.get('avg_seconds', 0):.1f}",
+        ),
     ]
 
     for label, v1, v2, v3 in rows:
@@ -225,10 +256,12 @@ def print_benchmark_report(results: dict) -> None:
 
     if results.get("comparison"):
         cmp = results["comparison"]
-        print(f"\nBrain vs No-Brain: {cmp.get('verified_delta', 0)} more verified, "
-              f"{cmp.get('false_positive_delta', 0)} fewer false positives")
+        print(
+            f"\nBrain vs No-Brain: {cmp.get('verified_delta', 0)} more verified, "
+            f"{cmp.get('false_positive_delta', 0)} fewer false positives"
+        )
 
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
 
 if __name__ == "__main__":

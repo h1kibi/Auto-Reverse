@@ -11,6 +11,7 @@ from .context import BrainContext
 
 import json
 
+
 def approx_tokens(value: object) -> int:
     if isinstance(value, str):
         text = value
@@ -43,9 +44,14 @@ class BrainContextBuilder:
     def __init__(self, token_budget: int = 4096):
         self.token_budget = token_budget
 
-    def build(self, state: dict, evidence_brief: dict,
-              memory_hits: list[dict], context_bundles: list[dict],
-              previous_observations: list[dict]) -> BrainContext:
+    def build(
+        self,
+        state: dict,
+        evidence_brief: dict,
+        memory_hits: list[dict],
+        context_bundles: list[dict],
+        previous_observations: list[dict],
+    ) -> BrainContext:
         ctx = BrainContext(
             run_id=state.get("run_id", ""),
             profile=evidence_brief,
@@ -55,12 +61,25 @@ class BrainContextBuilder:
             previous_actions=state.get("previous_actions", [])[-5:],
             previous_observations=previous_observations[-5:],
             failed_solvers=state.get("failed_solvers", [])[-5:],
-            allowed_tools=["profile_sample", "validate_candidate",
-                           "decompile_function", "decode_strings",
-                           "rank_functions", "read_artifact_range", "list_artifacts"],
-            allowed_solvers=["static_flag", "encoding", "dynamic_trace",
-                             "z3_extractor", "z3_constraints", "angr_path",
-                             "brute_force", "patcher"],
+            allowed_tools=[
+                "profile_sample",
+                "validate_candidate",
+                "decompile_function",
+                "decode_strings",
+                "rank_functions",
+                "read_artifact_range",
+                "list_artifacts",
+            ],
+            allowed_solvers=[
+                "static_flag",
+                "encoding",
+                "dynamic_trace",
+                "z3_extractor",
+                "z3_constraints",
+                "angr_path",
+                "brute_force",
+                "patcher",
+            ],
             budget_seconds_remaining=state.get("budget_seconds", 300),
             token_budget=self.token_budget,
         )

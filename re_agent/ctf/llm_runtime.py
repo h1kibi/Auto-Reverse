@@ -17,8 +17,14 @@ from ..brain.policy import PolicyGate, RuntimePolicy
 
 
 class LLMReverseRuntime:
-    def __init__(self, brain, tool_executor, context_builder,
-                 max_steps: int = 5, policy: RuntimePolicy | None = None):
+    def __init__(
+        self,
+        brain,
+        tool_executor,
+        context_builder,
+        max_steps: int = 5,
+        policy: RuntimePolicy | None = None,
+    ):
         self.brain = brain
         self.tool_executor = tool_executor
         self.context_builder = context_builder
@@ -32,11 +38,13 @@ class LLMReverseRuntime:
             ctx = self._build_context(state, step_idx)
 
             result = self.brain.plan(ctx)
-            state.setdefault("llm_trace", []).append({
-                "step": step_idx,
-                "context": ctx.model_dump(),
-                "brain_result": result.model_dump(),
-            })
+            state.setdefault("llm_trace", []).append(
+                {
+                    "step": step_idx,
+                    "context": ctx.model_dump(),
+                    "brain_result": result.model_dump(),
+                }
+            )
 
             if not result.actions or result.stop_reason:
                 state["stop_reason"] = result.stop_reason or "no_actions"
@@ -90,21 +98,29 @@ class LLMReverseRuntime:
         elif action.kind == "request_context":
             return self._handle_request_context(state, params)
         else:
-            return normalize_tool_result("unknown", {
-                "summary": f"Unsupported action kind: {action.kind}",
-                "status": "skipped",
-            })
+            return normalize_tool_result(
+                "unknown",
+                {
+                    "summary": f"Unsupported action kind: {action.kind}",
+                    "status": "skipped",
+                },
+            )
 
     def _handle_request_context(self, state: dict, params: dict) -> "RuntimeObservation":
         """Progressive Disclosure: LLM requests more context, system provides it."""
         from ..core.observation import RuntimeObservation
+
         function = params.get("function") or params.get("target", "")
         if not function:
-            return RuntimeObservation(tool="request_context", status="skipped",
-                summary="No function/target specified for context request")
+            return RuntimeObservation(
+                tool="request_context",
+                status="skipped",
+                summary="No function/target specified for context request",
+            )
 
         # Build context bundle on demand
         from .context_bundle import build_context_bundle
+
         profile = state.get("profile")
         out_dir = Path(state.get("output_dir", "artifacts"))
         bundle = build_context_bundle(function, profile, None, out_dir)
@@ -121,50 +137,70 @@ class LLMReverseRuntime:
 
     def _run_solver(self, state: dict, name: str, params: dict) -> "RuntimeObservation":
         from ..core.observation import RuntimeObservation
+
         try:
             from ..ctf.pipeline import SOLVER_MAP
             from ..ctf.solvers.base import SolverContext
+
             if name not in SOLVER_MAP:
-                return RuntimeObservation(tool=name, status="skipped",
-                    summary=f"Unknown solver: {name}")
+                return RuntimeObservation(
+                    tool=name, status="skipped", summary=f"Unknown solver: {name}"
+                )
             solver = SOLVER_MAP[name]()
             profile = state.get("profile")
             out_dir = state.get("output_dir", Path("artifacts"))
             ctx = SolverContext(profile=profile, output_dir=Path(out_dir))
             raw = []
             for c in solver.solve(ctx):
-                raw.append({"value": c.value, "source": c.source,
-                            "confidence": c.confidence, "evidence": c.evidence})
-            return RuntimeObservation(tool=name, status="ok",
+                raw.append(
+                    {
+                        "value": c.value,
+                        "source": c.source,
+                        "confidence": c.confidence,
+                        "evidence": c.evidence,
+                    }
+                )
+            return RuntimeObservation(
+                tool=name,
+                status="ok",
                 summary=f"{name}: {len(raw)} candidate(s)",
-                candidates=raw, risk="executes_sample")
+                candidates=raw,
+                risk="executes_sample",
+            )
         except Exception as e:
-            return RuntimeObservation(tool=name, status="error",
-                summary=f"{name} failed: {e}", error=str(e))
+            return RuntimeObservation(
+                tool=name, status="error", summary=f"{name} failed: {e}", error=str(e)
+            )
 
     def _run_tool(self, state: dict, name: str, params: dict) -> "RuntimeObservation":
         from ..core.observation import RuntimeObservation
+
         try:
             from ..ctf.tools import build_default_ctf_registry, ArtifactStore, ToolExecutor
+
             sample_path = state.get("sample_path", "")
             out_dir = state.get("output_dir", "artifacts")
             store = ArtifactStore(Path(out_dir))
             registry = build_default_ctf_registry(store)
             executor = ToolExecutor(registry, store)
             if name not in registry.names():
-                return RuntimeObservation(tool=name, status="skipped",
-                    summary=f"Unknown tool: {name}")
+                return RuntimeObservation(
+                    tool=name, status="skipped", summary=f"Unknown tool: {name}"
+                )
             raw = executor.execute(name, {**params, "sample_path": str(sample_path)})
             return normalize_tool_result(name, raw)
         except Exception as e:
-            return RuntimeObservation(tool=name, status="error",
-                summary=f"{name} failed: {e}", error=str(e))
+            return RuntimeObservation(
+                tool=name, status="error", summary=f"{name} failed: {e}", error=str(e)
+            )
 
     def _validate_observation_candidates(self, state: dict, action, obs):
         """Plan §3.1: ALL candidates must go through validator. Only accepted -> solved."""
         if not obs.candidates:
             return None
-        if self.policy.test_mode_allow_unverified and not getattr(action, "requires_validation", True):
+        if self.policy.test_mode_allow_unverified and not getattr(
+            action, "requires_validation", True
+        ):
             return None
 
         accepted = []
@@ -177,8 +213,7 @@ class LLMReverseRuntime:
 
             vr_obs = self._validate_candidate(
                 state,
-                {"candidate": value,
-                 "source": cand.get("source", obs.tool)},
+                {"candidate": value, "source": cand.get("source", obs.tool)},
             )
             state.setdefault("observations", []).append(vr_obs.model_dump())
             validations.append(vr_obs.model_dump())
@@ -209,19 +244,39 @@ class LLMReverseRuntime:
         )
         candidate = params.get("candidate") or params.get("value", "")
         if not candidate:
-            return RuntimeObservation(tool="validate_candidate", status="skipped",
-                summary="No candidate provided")
+            return RuntimeObservation(
+                tool="validate_candidate", status="skipped", summary="No candidate provided"
+            )
         try:
             sample = Path(state.get("sample_path", ""))
             out_dir = Path(state.get("output_dir", "artifacts"))
             validator = FlagValidator(timeout=10)
             vr = validator.validate(sample, candidate, output_dir=out_dir)
-            return RuntimeObservation(tool="validate_candidate", status="ok",
+            return RuntimeObservation(
+                tool="validate_candidate",
+                status="ok",
                 summary="accepted" if vr.accepted else "rejected",
-                candidates=[{"value": candidate, "accepted": vr.accepted,
-                             "confidence": vr.confidence, "mode": vr.mode}] if vr.accepted else [],
-                structured={"accepted": vr.accepted, "mode": vr.mode,
-                            "confidence": vr.confidence, "evidence": vr.evidence})
+                candidates=[
+                    {
+                        "value": candidate,
+                        "accepted": vr.accepted,
+                        "confidence": vr.confidence,
+                        "mode": vr.mode,
+                    }
+                ]
+                if vr.accepted
+                else [],
+                structured={
+                    "accepted": vr.accepted,
+                    "mode": vr.mode,
+                    "confidence": vr.confidence,
+                    "evidence": vr.evidence,
+                },
+            )
         except Exception as e:
-            return RuntimeObservation(tool="validate_candidate", status="error",
-                summary=f"Validation failed: {e}", error=str(e))
+            return RuntimeObservation(
+                tool="validate_candidate",
+                status="error",
+                summary=f"Validation failed: {e}",
+                error=str(e),
+            )

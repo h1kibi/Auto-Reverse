@@ -49,7 +49,7 @@ Output ONLY valid JSON with 'length' and 'constraints' fields.
 
 Decompiled:
 ```c
-{bundle.get('decompile_excerpt', '')[:4000]}
+{bundle.get("decompile_excerpt", "")[:4000]}
 ```
 
 Output format:

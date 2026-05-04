@@ -28,7 +28,9 @@ class PolicyGate:
             return False
         if risk == "mutates_binary" and not self.policy.allow_mutation:
             return False
-        if getattr(action, "kind", "") == "run_tool" and getattr(action, "name", "").startswith("raw_"):
+        if getattr(action, "kind", "") == "run_tool" and getattr(action, "name", "").startswith(
+            "raw_"
+        ):
             if not self.policy.allow_raw_commands:
                 return False
         return True
