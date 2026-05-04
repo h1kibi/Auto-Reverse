@@ -76,12 +76,13 @@ class LLMReverseRuntime:
         return state
 
     def _build_context(self, state: dict, step_idx: int) -> BrainContext:
+        prev_obs = state.get("observations", [])[-5:]
         return self.context_builder.build(
             state=state,
             evidence_brief=state.get("evidence_brief", {}),
             memory_hits=state.get("memory_hits", []),
             context_bundles=state.get("context_bundles", []),
-            previous_observations=state.get("observations", [])[-5:],
+            previous_observations=prev_obs,
         )
 
     def _dispatch_action(self, state: dict, action: BrainAction):

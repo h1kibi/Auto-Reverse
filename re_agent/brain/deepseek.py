@@ -11,7 +11,7 @@ import json
 from openai import OpenAI
 
 from .context import BrainContext
-from .actions import BrainResult
+from .actions import BrainResult, BrainAction
 from .base import parse_brain_result
 from .prompts import PLANNER_SYSTEM_PROMPT
 
@@ -25,23 +25,55 @@ class OpenAICompatibleBrain:
 
     def plan(self, ctx: BrainContext) -> BrainResult:
         try:
+            evidence = ctx.evidence_summary or {}
+            hints = []
+            for k in ["file_type", "crypto_hints", "comparison_hints", "encoding_hints",
+                       "protections", "solver_hints", "input_channels"]:
+                v = evidence.get(k)
+                if v:
+                    hints.append(f"{k}: {v}")
+
+            prev_text = ""
+            if ctx.previous_observations:
+                prev_summaries = [
+                    o.get("summary", "")[:80] for o in ctx.previous_observations[-3:]
+                    if isinstance(o, dict)
+                ]
+                prev_text = "Previous: " + "; ".join(prev_summaries) + ". "
+
+            prompt = (
+                f"CTF binary profile: {', '.join(hints)}.\n"
+                f"Available solvers: {', '.join(ctx.allowed_solvers)}.\n"
+                f"{prev_text}"
+                "Which ONE solver should I run? Start answer with solver name."
+            )
+
             resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-                    {"role": "user", "content": ctx.model_dump_json()},
+                    {"role": "system", "content": "You help pick the best reverse engineering solver for CTF challenges."},
+                    {"role": "user", "content": prompt},
                 ],
-                response_format={"type": "json_object"},
-                max_tokens=2048,
+                max_tokens=200,
                 temperature=0.1,
             )
-            return parse_brain_result(resp.choices[0].message.content)
-        except Exception:
-            return BrainResult(
-                actions=[],
-                stop_reason="brain_api_error",
-                assumptions=[str(ctx.profile)[:500]],
-            )
+            text = (resp.choices[0].message.content or "").lower()
+
+            # Parse solver name from text
+            solver = "static_flag"
+            for name in ctx.allowed_solvers:
+                if name in text:
+                    solver = name
+                    break
+            return BrainResult(actions=[
+                BrainAction(
+                    action_id="step_1", kind="run_solver", name=solver,
+                    rationale=text[:200], risk="read_only", created_from="brain",
+                )
+            ])
+        except Exception as e:
+            return BrainResult(actions=[], stop_reason="brain_api_error",
+                               assumptions=[str(e)[:200]])
 
     def extract_constraints(self, bundle: dict) -> dict | None:
         prompt = f"""Extract CTF byte-level constraints from this decompiled function.
