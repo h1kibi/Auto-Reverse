@@ -43,7 +43,7 @@ def test_no_docstring_import_same_line():
 
 def test_version_file_exists():
     from re_agent.version import __version__
-    assert __version__ == "0.6.0"
+    assert __version__ == "0.7.3"
 
 
 def test_pyproject_version_match():

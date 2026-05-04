@@ -1,6 +1,6 @@
 [project]
 name = "reverse-agent"
-version = "0.6.0"
+version = "0.7.3"
 description = "LLM-native reverse engineering runtime"
 readme = "README.md"
 requires-python = ">=3.10"

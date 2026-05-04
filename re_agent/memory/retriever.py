@@ -21,20 +21,18 @@ class MemoryRetriever:
         self.store = store
 
     def retrieve_for_profile(self, profile_dict: dict, top_k: int = 5) -> list[dict]:
-        """Retrieve relevant playbooks and lessons for a challenge profile"""
         results: list[dict] = []
 
-        tags = profile_dict.get("tags", [])
-        comparison_hints = profile_dict.get("comparison_hints", [])
-        crypto_hints = profile_dict.get("crypto_hints", [])
-        encoding_hints = profile_dict.get("encoding_hints", [])
+        tags = profile_dict.get("tags", []) or []
+        comparison_hints = profile_dict.get("comparison_hints", []) or []
+        crypto_hints = profile_dict.get("crypto_hints", []) or []
+        encoding_hints = profile_dict.get("encoding_hints", []) or []
+        success_strings = profile_dict.get("success_strings", []) or []
+        failure_strings = profile_dict.get("failure_strings", []) or []
 
-        # Build query signal list
         query_signals = set()
-        query_signals.update(comparison_hints)
-        query_signals.update(crypto_hints)
-        query_signals.update(encoding_hints)
-        query_signals.update(tags)
+        for xs in (tags, comparison_hints, crypto_hints, encoding_hints):
+            query_signals.update(str(x).lower() for x in xs if x)
 
         if success_strings:
             query_signals.add("has_success_string")
