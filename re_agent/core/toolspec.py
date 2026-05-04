@@ -28,6 +28,7 @@ class ToolSpec:
     output_schema: dict[str, Any] = field(default_factory=dict)
     default_timeout: int = 30
     requires_confirmation: bool = False
+    handler: Any = None  # optional: for ctf/tools.py registry usage
 
     @property
     def is_read_only(self) -> bool:

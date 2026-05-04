@@ -502,6 +502,8 @@ def _decompile_function_tool(store: ArtifactStore) -> ToolSpec:
 
         best = _pick_decompile_artifact(candidates, function)
         if best is None:
+            best = _fuzzy_match_artifact(candidates, function)  # ReVa-style fuzzy fallback
+        if best is None:
             return {
                 "summary": f"No decompile artifact matched function={function!r}.",
                 "data": {
@@ -515,13 +517,19 @@ def _decompile_function_tool(store: ArtifactStore) -> ToolSpec:
 
         excerpt = _read_excerpt(best, function=function, max_lines=max_lines)
         rel = str(best.relative_to(store.root))
+        excerpt_text = excerpt["text"]
         excerpt_artifact = store.write_text(
             f"decompile_excerpts/{_safe_name(function)}.txt",
-            excerpt["text"],
+            excerpt_text,
         )
 
+        callees = _extract_callees(excerpt_text)
+        strings_ref = _extract_referenced_strings(store.root, excerpt_text)
+        imports_used = _extract_imports_in_code(store.root, excerpt_text)
+        constants = _extract_constants(excerpt_text)
+
         return {
-            "summary": f"Returned decompile excerpt for {function!r} from {rel}",
+            "summary": f"Decompiled {function!r} (ReVa-style context)",
             "data": {
                 "found": True,
                 "function": function,
@@ -529,7 +537,12 @@ def _decompile_function_tool(store: ArtifactStore) -> ToolSpec:
                 "start_line": excerpt["start_line"],
                 "end_line": excerpt["end_line"],
                 "total_lines": excerpt["total_lines"],
-                "excerpt": excerpt["text"],
+                "excerpt": excerpt_text,
+                "callees": callees[:10],
+                "referenced_strings": strings_ref[:10],
+                "imports_used": imports_used[:10],
+                "constants": constants[:20],
+                "next_hint": "Call read_artifact_range for more context, or use rank_functions to find related functions.",
             },
             "artifacts": [excerpt_artifact],
         }
@@ -834,15 +847,74 @@ def _extract_strings_from_json(data: Any) -> list[str]:
 def _dedup_strings(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-
     for item in items:
         x = item.strip()
         if not x or x in seen:
             continue
         seen.add(x)
         out.append(x)
-
     return out
+
+
+def _fuzzy_match_artifact(paths: list[Path], function: str) -> Path | None:
+    """ReVa-style: try fuzzy matching if exact name match fails."""
+    needle = function.lower().replace("_", "").replace("-", "")
+    for p in paths:
+        name_low = p.name.lower().replace("_", "").replace("-", "")
+        if needle in name_low:
+            return p
+    for p in paths:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")[:80000]
+            if function.lower() in text.lower():
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def _extract_callees(decomp: str) -> list[str]:
+    """ReVa-style: extract function calls from decompiled code."""
+    skip = {"if","while","for","switch","return","sizeof","void","int","char",
+            "long","short","unsigned","signed","const","static","extern","typeof"}
+    return list(set(
+        m.group(1) for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", decomp)
+        if m.group(1) not in skip
+    ))
+
+
+def _extract_constants(decomp: str) -> list[str]:
+    return list(set(re.findall(r"0x[0-9a-fA-F]{2,8}", decomp)))[:20]
+
+
+def _extract_referenced_strings(root: Path, decomp: str) -> list[str]:
+    for pat in ["**/strings*.json", "**/strings*.txt", "**/strings"]:
+        for p in root.glob(pat):
+            try:
+                for line in p.read_text(encoding="utf-8", errors="replace")[:200000].split("\n"):
+                    s = line.strip().strip('"').strip("'")
+                    if s and len(s) >= 3 and s in decomp:
+                        return [s]  # return first match, keep it fast
+            except Exception:
+                continue
+    return []
+
+
+def _extract_imports_in_code(root: Path, decomp: str) -> list[str]:
+    for pat in ["**/imports*.json", "**/imports*.txt"]:
+        for p in root.glob(pat):
+            try:
+                imports = []
+                for line in p.read_text(encoding="utf-8", errors="replace")[:100000].split("\n"):
+                    imp = line.strip()
+                    if imp and len(imp) >= 2 and imp.lower() in decomp.lower():
+                        imports.append(imp)
+                        if len(imports) >= 10:
+                            return imports
+                return imports
+            except Exception:
+                continue
+    return []
 
 
 def _rank_functions_from_text(path: Path, text: str) -> list[dict[str, Any]]:
