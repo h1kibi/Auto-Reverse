@@ -22,14 +22,8 @@ class StringsTool(BaseTool):
                 ["strings", f"-n{self.min_length}", sample_path]
             )
             if rc != 0:
-                return ToolResult(
-                    tool=self.name,
-                    version=self.version,
-                    sample_sha256=sample_sha256,
-                    status=ToolStatus.FAILED,
-                    summary=f"strings command failed: {stderr}",
-                    errors=[stderr],
-                )
+                # Fallback: Python-based string extraction (Windows compatible)
+                stdout = _python_strings(sample_path, self.min_length)
 
             strings_list = stdout.strip().split("\n")
             strings_count = len(strings_list)
@@ -84,3 +78,26 @@ class StringsTool(BaseTool):
                     break
 
         return interesting
+
+
+def _python_strings(filepath: str, min_length: int = 4) -> str:
+    """Windows-compatible Python string extraction fallback."""
+    import re
+    strings = []
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+        # Find sequences of printable ASCII
+        current = []
+        for byte in data:
+            if 32 <= byte <= 126:  # Printable ASCII
+                current.append(chr(byte))
+                continue
+            if len(current) >= min_length:
+                strings.append("".join(current))
+            current = []
+        if len(current) >= min_length:
+            strings.append("".join(current))
+    except Exception:
+        pass
+    return "\n".join(strings)
