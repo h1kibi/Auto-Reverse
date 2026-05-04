@@ -856,6 +856,57 @@ def cmd_benchmark(args):
     return 0
 
 
+def cmd_snapshot(args):
+    """Export deterministic Evidence Snapshot (kernagent-style)."""
+    import json
+    from pathlib import Path
+    from .ctf.pipeline import run_analysis
+    from .ctf.profiler import build_profile
+    from .core.evidence import EvidenceGraph
+
+    sample = Path(args.sample).resolve()
+    if not sample.exists():
+        print(f"Error: Sample not found: {sample}"); return 1
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    print(f"Building snapshot for: {sample}")
+    analysis = run_analysis(sample_path=str(sample), output_dir=str(out), skip_ghidra=True)
+    evidence = EvidenceGraph.from_analysis(analysis)
+
+    snap = evidence.to_snapshot()
+    sid = evidence.snapshot_id()
+
+    (out / "meta.json").write_text(json.dumps({
+        "schema_version": "evidence-snapshot-v1",
+        "sample_sha256": analysis.sample.sha256,
+        "snapshot_id": sid,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    (out / "functions.jsonl").write_text("\n".join(
+        json.dumps(f, ensure_ascii=False) for f in snap.get("functions", [])
+    ), encoding="utf-8")
+
+    (out / "strings.jsonl").write_text("\n".join(
+        json.dumps(s, ensure_ascii=False) for s in snap.get("strings", [])
+    ), encoding="utf-8")
+
+    (out / "imports_exports.json").write_text(json.dumps(
+        snap.get("imports", []), ensure_ascii=False, indent=2
+    ), encoding="utf-8")
+
+    (out / "snapshot_id.txt").write_text(sid)
+    (out / "evidence_index.json").write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"Snapshot: {out}")
+    print(f"Snapshot ID: {sid}")
+    print(f"Functions: {len(snap.get('functions',[]))}")
+    print(f"Strings: {len(snap.get('strings',[]))}")
+    print(f"Imports: {len(snap.get('imports',[]))}")
+    return 0
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -1213,6 +1264,12 @@ def main():
     benchmark_parser.add_argument("--max-cases", type=int)
 
 
+    # ========== snapshot 命令 ==========
+    snapshot_parser = subparsers.add_parser("snapshot", help="导出确定性 Evidence Snapshot")
+    snapshot_parser.add_argument("sample", help="样本文件路径")
+    snapshot_parser.add_argument("--out", default="snapshot/", help="输出目录")
+
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1243,6 +1300,8 @@ def main():
         return cmd_llm_solve(args)
     elif args.command == "benchmark":
         return cmd_benchmark(args)
+    elif args.command == "snapshot":
+        return cmd_snapshot(args)
 
     return 0
 
