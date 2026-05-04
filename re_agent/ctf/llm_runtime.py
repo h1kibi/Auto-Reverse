@@ -61,6 +61,15 @@ class LLMReverseRuntime:
 
                 obs = self._dispatch_action(state, action)
                 state.setdefault("observations", []).append(obs.model_dump())
+
+                # Record action result in ledger (hana fix: prevent repeats)
+                try:
+                    from .action_ledger import record_action_result, was_action_failed
+                except ImportError:
+                    pass
+                else:
+                    record_action_result(state, action, obs)
+
                 action_count += 1
 
                 validation_obs = self._validate_observation_candidates(state, action, obs)
