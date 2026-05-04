@@ -7,10 +7,18 @@ GPT requirement: profile(300t) -> memory(800t) -> bundles(1500t) -> observations
 from __future__ import annotations
 
 from .context import BrainContext
-from .actions import BrainAction
 
 
-def approx_tokens(text: str) -> int:
+import json
+
+def approx_tokens(value: object) -> int:
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(value)
     return max(1, len(text) // 4)
 
 
@@ -38,7 +46,7 @@ class BrainContextBuilder:
     def build(self, state: dict, evidence_brief: dict,
               memory_hits: list[dict], context_bundles: list[dict],
               previous_observations: list[dict]) -> BrainContext:
-        return BrainContext(
+        ctx = BrainContext(
             run_id=state.get("run_id", ""),
             profile=evidence_brief,
             evidence_summary=evidence_brief,
@@ -56,3 +64,5 @@ class BrainContextBuilder:
             budget_seconds_remaining=state.get("budget_seconds", 300),
             token_budget=self.token_budget,
         )
+        ctx.estimated_tokens = approx_tokens(ctx.model_dump())
+        return ctx

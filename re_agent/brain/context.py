@@ -28,3 +28,5 @@ class BrainContext(BaseModel):
 
     budget_seconds_remaining: int = 300
     token_budget: int = 4096
+    estimated_tokens: int = 0
+    truncation_notes: list[str] = Field(default_factory=list)

@@ -11,9 +11,9 @@ import json
 from openai import OpenAI
 
 from .context import BrainContext
-from .actions import BrainResult, BrainAction
+from .actions import BrainResult
 from .base import parse_brain_result
-from .prompts import PLANNER_SYSTEM_PROMPT, PROMPT_VERSION
+from .prompts import PLANNER_SYSTEM_PROMPT
 
 
 class OpenAICompatibleBrain:

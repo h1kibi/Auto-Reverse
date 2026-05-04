@@ -793,10 +793,27 @@ def cmd_llm_solve(args):
     print("\nRunning LLM Brain loop...\n")
     result_state = runtime.run(state)
 
+    # Write outputs
     trace_path = output_dir / "llm_trace.jsonl"
     with trace_path.open("w", encoding="utf-8") as f:
         for entry in result_state.get("llm_trace", []):
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    (output_dir / "final_state.json").write_text(
+        json.dumps(result_state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    total_est_tokens = sum(
+        e.get("context", {}).get("estimated_tokens", 0)
+        for e in result_state.get("llm_trace", [])
+    )
+    (output_dir / "brain_metrics.json").write_text(json.dumps({
+        "brain": args.brain,
+        "model": args.model or "default",
+        "steps": len(result_state.get("llm_trace", [])),
+        "observations": len(result_state.get("observations", [])),
+        "estimated_context_tokens": total_est_tokens,
+        "solved": result_state.get("solved", False),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     solved = result_state.get("solved", False)
     winning = result_state.get("winning_candidate", {})
@@ -811,6 +828,16 @@ def cmd_llm_solve(args):
     print(f"{'='*60}")
 
     return 0 if solved else 2
+
+
+def cmd_benchmark(args):
+    """三模式 benchmark runner"""
+    from pathlib import Path
+    from .ctf.benchmark import run_benchmark, print_benchmark_report
+    modes = args.modes.split(",") if args.modes else ["auto-no-brain"]
+    result = run_benchmark(modes=modes, brain_name=args.brain)
+    print_benchmark_report(result)
+    return 0
 
 
 def main():
@@ -1153,52 +1180,18 @@ def main():
     llm_parser.add_argument("-o", "--output", help="输出目录")
     llm_parser.add_argument("--flag-regex", default=r"flag\{[^}]+\}")
 
-    # ========== memory 命令组 ==========
-    memory_parser = subparsers.add_parser(
-        "memory",
-        help="记忆管理（playbook / self-lesson）",
+
+    # ========== benchmark 命令 ==========
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="三模式 benchmark (llm-only / auto-no-brain / auto-brain)",
     )
-    memory_sub = memory_parser.add_subparsers(dest="memory_action", help="子命令")
+    benchmark_parser.add_argument("root", help="Challenges 目录路径")
+    benchmark_parser.add_argument("--modes", default="auto-no-brain")
+    benchmark_parser.add_argument("--brain", default="deepseek")
+    benchmark_parser.add_argument("--model", default=None)
+    benchmark_parser.add_argument("--max-cases", type=int)
 
-    # memory ingest
-    ingest_parser = memory_sub.add_parser("ingest", help="导入社区文章为 Playbook")
-    ingest_parser.add_argument("path", help="Markdown 或 JSON 文件路径")
-    ingest_parser.add_argument("--source-url", default="", help="文章来源 URL")
-    ingest_parser.add_argument("--source-name", default="manual", help="来源名称")
-    ingest_parser.add_argument("--db", default="memory.db", help="数据库路径")
-    ingest_parser.add_argument("--use-llm", action="store_true", help="使用 LLM 蒸馏为结构化 Playbook")
-
-    # memory search
-    search_parser = memory_sub.add_parser("search", help="搜索记忆")
-    search_parser.add_argument("query", help="搜索关键词")
-    search_parser.add_argument("--db", default="memory.db", help="数据库路径")
-    search_parser.add_argument("--limit", type=int, default=10)
-
-    # memory stats
-    stats_parser = memory_sub.add_parser("stats", help="记忆统计")
-    stats_parser.add_argument("--db", default="memory.db", help="数据库路径")
-
-    #     memory reflect
-    reflect_parser = memory_sub.add_parser("reflect", help="从求解 trace 生成 SelfLesson")
-    reflect_parser.add_argument("sha256", help="样本 SHA256")
-    reflect_parser.add_argument("--solver", default="", help="获胜 solver")
-    reflect_parser.add_argument("--db", default="memory.db", help="数据库路径")
-
-    # memory add-playbook
-    addpb_parser = memory_sub.add_parser("add-playbook", help="导入 Markdown 经验为 Playbook")
-    addpb_parser.add_argument("path", help="Markdown 文件路径")
-    addpb_parser.add_argument("--db", default="memory.db", help="数据库路径")
-
-    # memory list
-    list_parser = memory_sub.add_parser("list", help="列出记忆条目")
-    list_parser.add_argument("--db", default="memory.db", help="数据库路径")
-    list_parser.add_argument("--tag", help="按标签过滤")
-    list_parser.add_argument("--limit", type=int, default=20)
-
-    # memory show
-    show_parser = memory_sub.add_parser("show", help="显示单条记忆详情")
-    show_parser.add_argument("id", help="记忆条目 ID")
-    show_parser.add_argument("--db", default="memory.db", help="数据库路径")
 
     args = parser.parse_args()
 
@@ -1228,6 +1221,8 @@ def main():
         return cmd_memory(args)
     elif args.command == "llm-solve":
         return cmd_llm_solve(args)
+    elif args.command == "benchmark":
+        return cmd_benchmark(args)
 
     return 0
 

@@ -7,13 +7,11 @@ Does NOT modify existing solve pipeline.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from ..core.observation import normalize_tool_result
-from ..ctf.solvers.base import SolverContext
+from ..core.observation import RuntimeObservation, normalize_tool_result
 from ..ctf.validator import FlagValidator
-from ..brain.actions import BrainResult, BrainAction
+from ..brain.actions import BrainAction
 from ..brain.context import BrainContext
 from ..brain.policy import PolicyGate, RuntimePolicy
 
