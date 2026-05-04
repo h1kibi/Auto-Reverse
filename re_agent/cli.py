@@ -1179,6 +1179,10 @@ def main():
     llm_parser.add_argument("--allow-dynamic", action="store_true", help="允许动态执行工具")
     llm_parser.add_argument("-o", "--output", help="输出目录")
     llm_parser.add_argument("--flag-regex", default=r"flag\{[^}]+\}")
+    llm_parser.add_argument("--memory-db", default="memory.db", help="Memory 数据库路径")
+    llm_parser.add_argument("--token-budget", type=int, default=4096, help="每次 LLM 调用的 token 预算")
+    llm_parser.add_argument("--max-actions-per-step", type=int, default=2)
+    llm_parser.add_argument("--redact", action="store_true")
 
 
     # ========== benchmark 命令 ==========

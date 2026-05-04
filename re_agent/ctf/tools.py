@@ -23,6 +23,7 @@ from .validator import FlagValidator
 from ..core.toolspec import ToolSpec, ToolCall, ToolObservation, ToolRisk
 from ..core.policy import ExecutionPolicy, check_policy
 from ..core.evidence_v2 import redact_tool_args
+from ..core.observation import normalize_tool_result
 
 JsonDict = dict[str, Any]
 
@@ -164,6 +165,7 @@ class ToolExecutor:
             spec = self.registry.get(tool_name)
             result = spec.handler(arguments)
             elapsed_ms = int((time.time() - started) * 1000)
+            obs = normalize_tool_result(tool_name, result)
 
             self.store.append_jsonl(
                 "agent_trace.jsonl",
@@ -175,14 +177,12 @@ class ToolExecutor:
                     "ok": True,
                     "summary": result.get("summary", ""),
                     "artifacts": result.get("artifacts", []),
+                    "observation": obs.model_dump(),
                 },
             )
 
-            return {
-                "ok": True,
-                "tool": tool_name,
-                **result,
-            }
+            result["observation"] = obs.model_dump()
+            return result
 
         except Exception as e:
             elapsed_ms = int((time.time() - started) * 1000)
