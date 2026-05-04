@@ -54,7 +54,11 @@ class BrainContextBuilder:
     ) -> BrainContext:
         ctx = BrainContext(
             run_id=state.get("run_id", ""),
-            profile=evidence_brief,
+            profile={
+                **evidence_brief,
+                "packer": state.get("packer_profile", {}),
+                "failed_action_keys": list(state.get("failed_action_keys", [])),
+            },
             evidence_summary=evidence_brief,
             memory_hits=memory_hits[:5],
             context_bundles=context_bundles[:3],

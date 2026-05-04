@@ -747,6 +747,16 @@ def cmd_llm_solve(args):
     evidence = EvidenceGraph.from_analysis(analysis)
     evidence_brief = build_evidence_brief(profile)
 
+    # Packer detection - add to profile dict for Brain context
+    try:
+        from .ctf.packer_detect import detect_packer
+        packer = detect_packer(sample)
+        profile_dict["packer"] = packer.model_dump()
+        if packer.is_packed:
+            print(f"  Packer detected: {packer.packer} (confidence={packer.confidence:.2f})")
+    except Exception:
+        pass
+
     # Convert profile to serializable dict
     profile_dict = {
         "file_type": getattr(profile, "file_type", ""),
@@ -804,6 +814,7 @@ def cmd_llm_solve(args):
         "profile": profile_dict, "evidence_brief": evidence_brief.model_dump(),
         "memory_hits": memory_hits, "context_bundles": [],
         "observations": [], "budget_seconds": 300,
+        "failed_action_keys": [], "packer_profile": profile_dict.get("packer", {}),
     }
 
     print("\nRunning LLM Brain loop...\n")

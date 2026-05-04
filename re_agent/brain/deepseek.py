@@ -26,12 +26,19 @@ class OpenAICompatibleBrain:
     def plan(self, ctx: BrainContext) -> BrainResult:
         try:
             evidence = ctx.evidence_summary or {}
+            profile = ctx.profile or {}
+            packer = profile.get("packer", {})
+            failed_actions = profile.get("failed_action_keys", profile.get("failed_solvers", []))
             hints = []
             for k in ["file_type", "crypto_hints", "comparison_hints", "encoding_hints",
                        "protections", "solver_hints", "input_channels"]:
                 v = evidence.get(k)
                 if v:
                     hints.append(f"{k}: {v}")
+            if packer.get("is_packed"):
+                hints.append(f"PACKED: {packer.get('packer', '?')} (do NOT use static_flag/encoding)")
+            if failed_actions:
+                hints.append(f"FAILED: {failed_actions}")
 
             prev_text = ""
             if ctx.previous_observations:
